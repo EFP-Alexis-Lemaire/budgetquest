@@ -210,9 +210,17 @@ function validateCode(content, filePath) {
     }
   }
 
-  // Vérifier les balises de code résiduelles
-  if (content.includes('```')) {
-    console.error(`[Autonomous] ❌ Backticks résiduels détectés`);
+  // Détecter plusieurs composants/fichiers fusionnés
+  const multipleExportDefaults = (content.match(/export default function/g) || []).length;
+  if (multipleExportDefaults > 1) {
+    console.error('[Autonomous] ❌ Plusieurs composants détectés dans un seul fichier');
+    return false;
+  }
+
+  // Détecter un chemin de fichier commenté en milieu de code (signe de fusion)
+  const midFileComment = content.match(/\n\/\/ (?:frontend|backend)\/src\//);
+  if (midFileComment) {
+    console.error('[Autonomous] ❌ Fusion de fichiers détectée dans le code');
     return false;
   }
 
