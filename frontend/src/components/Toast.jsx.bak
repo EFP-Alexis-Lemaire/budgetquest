@@ -1,68 +1,42 @@
-import { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+import { BadgeCheck } from 'lucide-react';
 
-const Toast = ({ message, duration = 3000, onClose }) => {
+const NotificationSystem = () => {
+  const queryClient = useQueryClient();
+
   useEffect(() => {
-    const timer = setTimeout(() => {
-      onClose();
-    }, duration);
-    return () => clearTimeout(timer);
-  }, [duration, onClose]);
+    const handleNewBadge = (badge) => {
+      toast(
+        <div className="flex items-center gap-3">
+          <BadgeCheck className="text-primary-600" />
+          <div>
+            <p className="font-bold">{badge.title}</p>
+            <p className="text-sm">{badge.description}</p>
+          </div>
+        </div>,
+        {
+          className: 'bg-gray-900 text-gray-100 border border-gray-800 rounded-xl',
+          autoClose: 5000,
+        }
+      );
+    };
 
-  return (
-    <div className="fixed top-4 right-4 bg-gray-800 text-white p-4 rounded-lg shadow-lg flex items-center space-x-2">
-      <span>{message}</span>
-      <button onClick={onClose} className="text-gray-400 hover:text-white">
-        <X size={16} />
-      </button>
-    </div>
-  );
+    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type === 'queryUpdated' && event.query.queryKey[0] === 'badges') {
+        const newBadge = event.query.state.data?.newBadge;
+        if (newBadge) {
+          handleNewBadge(newBadge);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [queryClient]);
+
+  return <ToastContainer position="top-right" />;
 };
 
-const ToastContainer = () => {
-  const [toasts, setToasts] = useState([]);
-
-  const addToast = (message, duration) => {
-    const id = Date.now();
-    setToasts((prevToasts) => [...prevToasts, { id, message, duration }]);
-  };
-
-  const removeToast = (id) => {
-    setToasts((prevToasts) => prevToasts.filter((toast) => toast.id !== id));
-  };
-
-  return (
-    <div>
-      {toasts.map((toast) => (
-        <Toast
-          key={toast.id}
-          message={toast.message}
-          duration={toast.duration}
-          onClose={() => removeToast(toast.id)}
-        />
-      ))}
-    </div>
-  );
-};
-
-export default ToastContainer;
-
-// Usage example in another component
-import ToastContainer from './components/ToastContainer';
-
-function SomeComponent() {
-  const toastRef = useRef();
-
-  const handleAction = () => {
-    toastRef.current.addToast('You gained XP!', 3000);
-  };
-
-  return (
-    <div>
-      <button onClick={handleAction} className="btn-primary">
-        Gain XP
-      </button>
-      <ToastContainer ref={toastRef} />
-    </div>
-  );
-}
+export default NotificationSystem;

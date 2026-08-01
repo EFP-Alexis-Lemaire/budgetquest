@@ -1,42 +1,73 @@
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useAuthStore } from './store/authStore';
+import Layout from './components/Layout';
+import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
+import DashboardPage from './pages/DashboardPage';
+import BudgetPage from './pages/BudgetPage';
+import TransactionsPage from './pages/TransactionsPage';
+import SavingsPage from './pages/SavingsPage';
+import GamificationPage from './pages/GamificationPage';
+import AnalyticsPage from './pages/AnalyticsPage';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import { BadgeCheck } from 'lucide-react';
+import api from './lib/api';
 
-const NotificationSystem = () => {
-  const queryClient = useQueryClient();
-
-  useEffect(() => {
-    const handleNewBadge = (badge) => {
-      toast(
-        <div className="flex items-center gap-3">
-          <BadgeCheck className="text-primary-600" />
-          <div>
-            <p className="font-bold">{badge.title}</p>
-            <p className="text-sm">{badge.description}</p>
-          </div>
-        </div>,
-        {
-          className: 'bg-gray-900 text-gray-100 border border-gray-800 rounded-xl',
-          autoClose: 5000,
-        }
-      );
-    };
-
-    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
-      if (event.type === 'queryUpdated' && event.query.queryKey[0] === 'badges') {
-        const newBadge = event.query.state.data?.newBadge;
-        if (newBadge) {
-          handleNewBadge(newBadge);
-        }
-      }
-    });
-
-    return () => unsubscribe();
-  }, [queryClient]);
-
-  return <ToastContainer position="top-right" />;
+const ProtectedRoute = ({ children }) => {
+  const { token } = useAuthStore();
+  return token ? children : <Navigate to="/login" replace />;
 };
 
-export default NotificationSystem;
+export default function App() {
+  const { token } = useAuthStore();
+
+  useEffect(() => {
+    if (token) {
+      api.get('/challenges/daily')
+        .then(response => {
+          if (response.data.newChallengeAvailable) {
+            toast.info('Un nouveau challenge quotidien est disponible !', {
+              position: "top-right",
+              autoClose: 5000,
+              hideProgressBar: false,
+              closeOnClick: true,
+              pauseOnHover: true,
+              draggable: true,
+              progress: undefined,
+              theme: "dark",
+            });
+          }
+        })
+        .catch(error => {
+          console.error('Erreur lors de la vérification des challenges quotidiens:', error);
+        });
+    }
+  }, [token]);
+
+  return (
+    <>
+      <ToastContainer />
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <Layout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<DashboardPage />} />
+          <Route path="budget" element={<BudgetPage />} />
+          <Route path="transactions" element={<TransactionsPage />} />
+          <Route path="savings" element={<SavingsPage />} />
+          <Route path="gamification" element={<GamificationPage />} />
+          <Route path="analytics" element={<AnalyticsPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
+  );
+}
