@@ -2,16 +2,14 @@
  * BudgetQuest - Equipe intelligente d'agents
  *
  * Processus par cycle :
- *  1. SCAN       - Lire tout le code + contexte projet
- *  2. BRAINSTORM - 3 agents debattent et proposent des idees
- *  3. PLAN       - Chef de projet selectionne UNE tache avec spec detaillee
+ *  1. SCAN       - Lire code + contexte + roadmap
+ *  2. BRAINSTORM - 3 agents proposent selon la priorite actuelle
+ *  3. PLAN       - Chef de projet selectionne UNE tache (must have > should have > nice to have)
  *  4. IMPLEMENT  - Agent implemente avec contexte complet
- *  5. REVIEW     - Reviewer critique le code produit (score 0-10)
+ *  5. REVIEW     - Reviewer critique (score 0-10)
  *  6. FIX        - Correction si score < 8 (max 2 passes)
  *  7. BUILD      - Vite build obligatoire
- *  8. PUSH       - Commit seulement si build vert
- *
- * Une seule tache bien faite toutes les 15 minutes.
+ *  8. PUSH       - Commit seulement si build vert + mise a jour roadmap
  */
 
 require('dotenv').config({ path: '../.env' });
@@ -20,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const { notify, notifyError, askHuman } = require('./telegram');
+const { notify, notifyError } = require('./telegram');
 const { commitAndPush } = require('./agents/devopsAgent');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -33,16 +31,85 @@ function loadDone() {
   if (!fs.existsSync(DONE_FILE)) return [];
   return JSON.parse(fs.readFileSync(DONE_FILE, 'utf-8'));
 }
-function saveDone(task) {
+function saveDone(taskTitle) {
   const done = loadDone();
-  done.push({ task, at: new Date().toISOString() });
+  done.push({ task: taskTitle, at: new Date().toISOString() });
   fs.writeFileSync(DONE_FILE, JSON.stringify(done, null, 2));
 }
 
-// ─── Contexte projet ──────────────────────────────────────
-function loadProjectContext() {
-  const p = path.join(__dirname, 'PROJECT_CONTEXT.md');
-  return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : '';
+// ─── Fichiers de contexte ─────────────────────────────────
+function loadContext() {
+  const ctxPath = path.join(__dirname, 'PROJECT_CONTEXT.md');
+  return fs.existsSync(ctxPath) ? fs.readFileSync(ctxPath, 'utf-8') : '';
+}
+
+function loadRoadmap() {
+  const rmPath = path.join(__dirname, 'ROADMAP.md');
+  return fs.existsSync(rmPath) ? fs.readFileSync(rmPath, 'utf-8') : '';
+}
+
+function saveRoadmap(content) {
+  fs.writeFileSync(path.join(__dirname, 'ROADMAP.md'), content, 'utf-8');
+}
+
+// ─── Analyser la priorite actuelle depuis la roadmap ──────
+function getCurrentPriority(roadmap) {
+  const mustSection = roadmap.split('## 🟡')[0];
+  const shouldSection = (roadmap.split('## 🟡')[1] || '').split('## 🟢')[0];
+
+  const mustRemaining = (mustSection.match(/- \[ \]/g) || []).length;
+  const shouldRemaining = (shouldSection.match(/- \[ \]/g) || []).length;
+
+  if (mustRemaining > 0) {
+    return {
+      level: 'MUST HAVE',
+      emoji: '🔴',
+      remaining: mustRemaining,
+      instruction: 'Il reste ' + mustRemaining + ' MUST HAVE. Les agents se concentrent UNIQUEMENT sur les fonctionnalites core. Les effets CSS, animations, polish sont INTERDITS.',
+    };
+  }
+  if (shouldRemaining > 0) {
+    return {
+      level: 'SHOULD HAVE',
+      emoji: '🟡',
+      remaining: shouldRemaining,
+      instruction: 'Tous les MUST HAVE sont faits. Il reste ' + shouldRemaining + ' SHOULD HAVE. Les agents travaillent sur ces fonctionnalites importantes. Les animations sont encore interdites.',
+    };
+  }
+  return {
+    level: 'NICE TO HAVE',
+    emoji: '🟢',
+    remaining: 0,
+    instruction: 'Tous les MUST HAVE et SHOULD HAVE sont implementes. Les agents peuvent travailler sur le polish et les animations.',
+  };
+}
+
+// ─── Taches restantes de la roadmap ──────────────────────
+function getRemainingTasks(roadmap) {
+  return (roadmap.match(/- \[ \] .+/g) || []).map(t => t.replace('- [ ] ', '')).slice(0, 12);
+}
+
+// ─── Cocher une tache dans la roadmap ────────────────────
+function tickRoadmap(roadmap, taskTitle) {
+  const normalized = taskTitle.toLowerCase();
+  const lines = roadmap.split('\n');
+  let ticked = false;
+
+  const updated = lines.map(line => {
+    if (ticked || !line.includes('- [ ]')) return line;
+    const words = normalized.split(' ').filter(w => w.length > 4);
+    const matches = words.filter(w => line.toLowerCase().includes(w)).length;
+    if (matches >= Math.ceil(words.length * 0.5)) {
+      ticked = true;
+      return line.replace('- [ ]', '- [x]');
+    }
+    return line;
+  });
+
+  if (ticked) {
+    saveRoadmap(updated.join('\n'));
+    console.log('[Team] Roadmap: tache cochee pour "' + taskTitle + '"');
+  }
 }
 
 // ─── Scanner le projet ────────────────────────────────────
@@ -58,29 +125,24 @@ function scanProject() {
     if (!fs.existsSync(full)) continue;
     fs.readdirSync(full).forEach(f => {
       if (!f.match(/\.(js|jsx)$/)) return;
-      const rel = dir + '/' + f;
-      files[rel] = fs.readFileSync(path.join(full, f), 'utf-8');
+      files[dir + '/' + f] = fs.readFileSync(path.join(full, f), 'utf-8');
     });
   }
   return files;
 }
 
 // ─── Appel GPT ────────────────────────────────────────────
-async function gpt(systemMsg, userMsg, json = false) {
+async function gpt(system, user, json) {
   const opts = {
     model: 'gpt-4o',
-    messages: [
-      { role: 'system', content: systemMsg },
-      { role: 'user', content: userMsg },
-    ],
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     temperature: json ? 0.1 : 0.4,
     max_tokens: 4096,
   };
   if (json) opts.response_format = { type: 'json_object' };
   for (let i = 0; i < 3; i++) {
     try {
-      const res = await openai.chat.completions.create(opts);
-      return res.choices[0].message.content;
+      return (await openai.chat.completions.create(opts)).choices[0].message.content;
     } catch (err) {
       if (i === 2) throw err;
       await new Promise(r => setTimeout(r, 3000));
@@ -89,179 +151,156 @@ async function gpt(systemMsg, userMsg, json = false) {
 }
 
 // ─── ETAPE 1 : BRAINSTORM ─────────────────────────────────
-async function brainstorm(projectFiles, doneTasks, context) {
-  console.log('\n[Team] Etape 1/6 - Brainstorm...');
+async function brainstorm(projectFiles, doneTasks, context, priority, remaining) {
+  console.log('[Team] 1/6 Brainstorm (' + priority.emoji + ' ' + priority.level + ')...');
 
   const fileList = Object.keys(projectFiles).join('\n');
-  const doneList = doneTasks.slice(-15).map(t => '- ' + t.task).join('\n') || 'Aucune';
+  const doneList = doneTasks.slice(-10).map(t => '- ' + t.task).join('\n') || 'Aucune';
+  const remainingList = remaining.join('\n');
 
-  const baseContext = 'CONTEXTE PROJET COMPLET :\n' + context +
-    '\n\nFICHIERS EXISTANTS :\n' + fileList +
-    '\n\nTACHES DEJA FAITES (ne pas repeter) :\n' + doneList;
+  const priorityBlock =
+    'PRIORITE ACTUELLE : ' + priority.emoji + ' ' + priority.level + '\n' +
+    priority.instruction + '\n\n' +
+    'FONCTIONNALITES RESTANTES A IMPLEMENTER :\n' + remainingList;
+
+  const base =
+    priorityBlock + '\n\n' +
+    'CONTEXTE PROJET :\n' + context.substring(0, 1500) + '\n\n' +
+    'FICHIERS EXISTANTS :\n' + fileList + '\n\n' +
+    'TACHES DEJA FAITES :\n' + doneList;
 
   const frontendIdeas = await gpt(
-    'Tu es un developpeur frontend senior React/TailwindCSS expert sur BudgetQuest. ' +
-    'Tu connais les regles du projet et tu proposes uniquement des ameliorations realisables ' +
-    'avec les librairies installees. Tu preferes creer de nouveaux fichiers plutot que modifier lexistant.',
-    baseContext + '\n\nPropose 3 ameliorations frontend. Pour chacune : titre, impact utilisateur, ' +
-    'complexite (faible/moyenne/haute), fichier cible (nouveau ou existant), risque.'
+    'Tu es un developpeur frontend senior React/TailwindCSS sur BudgetQuest. ' +
+    'Tu respectes STRICTEMENT la contrainte de priorite. ' +
+    'Tu proposes uniquement des ameliorations realisables avec les librairies installees. ' +
+    'Tu preferes creer de nouveaux fichiers plutot que modifier lexistant.',
+    base + '\n\nPropose 3 ameliorations frontend en respectant la priorite. ' +
+    'Pour chacune : titre, impact, complexite, fichier (nouveau ou existant), risque.'
   );
 
   const backendIdeas = await gpt(
-    'Tu es un developpeur backend senior Node.js/Express/Supabase expert sur BudgetQuest. ' +
-    'Tu connais les regles du projet et tu proposes uniquement des ameliorations realisables.',
-    baseContext + '\n\nPropose 3 ameliorations backend. Pour chacune : titre, impact, complexite, fichier cible, risque.'
+    'Tu es un developpeur backend senior Node.js/Express sur BudgetQuest. ' +
+    'Tu respectes STRICTEMENT la contrainte de priorite.',
+    base + '\n\nPropose 3 ameliorations backend en respectant la priorite. ' +
+    'Pour chacune : titre, impact, complexite, fichier, risque.'
   );
 
-  const uxCritique = await gpt(
-    'Tu es un expert UX et qualite logicielle. Tu analyses les propositions avec un oeil critique ' +
-    'et tu identifies les risques (imports fantomes, librairies manquantes, regressions potentielles).',
-    'PROPOSITIONS FRONTEND :\n' + frontendIdeas +
-    '\n\nPROPOSITIONS BACKEND :\n' + backendIdeas +
-    '\n\nCONTEXTE PROJET :\n' + context.substring(0, 1500) +
-    '\n\nAnalyse critique : quelles 2 propositions sont les plus sures et les plus impactantes ? ' +
-    'Quelles sont les plus risquees et pourquoi ?'
+  const critique = await gpt(
+    'Tu es expert UX et qualite logicielle sur BudgetQuest. ' +
+    'Tu analyses les propositions avec un oeil critique sur les risques techniques et la valeur utilisateur. ' +
+    'Tu rappelles la contrainte de priorite si une proposition la viole.',
+    'PRIORITE : ' + priority.emoji + ' ' + priority.level + '\n' +
+    'PROPOSALS FRONTEND :\n' + frontendIdeas + '\n\n' +
+    'PROPOSALS BACKEND :\n' + backendIdeas + '\n\n' +
+    'Quelles 2 propositions sont les plus sures et les plus alignees avec la priorite ? ' +
+    'Lesquelles violent la contrainte de priorite ?'
   );
 
-  return { frontendIdeas, backendIdeas, uxCritique };
+  return { frontendIdeas, backendIdeas, critique };
 }
 
 // ─── ETAPE 2 : PLAN ───────────────────────────────────────
-async function plan(brainstormResult, projectFiles, context) {
-  console.log('[Team] Etape 2/6 - Planification...');
-
-  const filesSample = Object.entries(projectFiles)
-    .slice(0, 8)
-    .map(([f, c]) => '=== ' + f + ' ===\n' + c.substring(0, 400))
-    .join('\n\n');
+async function plan(bs, projectFiles, context, priority, remaining) {
+  console.log('[Team] 2/6 Planification...');
 
   const result = await gpt(
-    'Tu es le chef de projet BudgetQuest. Tu selectionnes UNE seule tache ce cycle. ' +
-    'Tu privilegies toujours les taches a faible risque (nouveau fichier > modification). ' +
-    'Tu refuses toute tache qui utiliserait des librairies non installees. Reponds en json.',
-    'BRAINSTORM :\nFrontend : ' + brainstormResult.frontendIdeas.substring(0, 600) +
-    '\nBackend : ' + brainstormResult.backendIdeas.substring(0, 600) +
-    '\nCritique UX : ' + brainstormResult.uxCritique.substring(0, 400) +
-    '\n\nCONTEXTE PROJET :\n' + context.substring(0, 2000) +
-    '\n\nEXTRAITS CODE :\n' + filesSample.substring(0, 2000) +
-    '\n\nRetourne ce json exact :\n' +
+    'Tu es chef de projet BudgetQuest. Tu selectionnes UNE seule tache ce cycle. ' +
+    'REGLE ABSOLUE : tu DOIS respecter la contrainte de priorite. ' +
+    'Tu refuses les librairies non installees. Reponds en json.',
+    'PRIORITE : ' + priority.emoji + ' ' + priority.level + '\n' +
+    priority.instruction + '\n\n' +
+    'FONCTIONNALITES A FAIRE :\n' + remaining.join('\n') + '\n\n' +
+    'BRAINSTORM FRONTEND :\n' + bs.frontendIdeas.substring(0, 500) + '\n\n' +
+    'BRAINSTORM BACKEND :\n' + bs.backendIdeas.substring(0, 500) + '\n\n' +
+    'CRITIQUE UX :\n' + bs.critique.substring(0, 400) + '\n\n' +
+    'CONTEXTE :\n' + context.substring(0, 1000) + '\n\n' +
+    'FICHIERS EXISTANTS :\n' + Object.keys(projectFiles).join('\n') + '\n\n' +
+    'Retourne ce json : ' +
     '{"agent":"frontend ou backend",' +
     '"title":"titre court",' +
-    '"why":"pourquoi cette tache maintenant en 1 phrase",' +
-    '"outputFile":"frontend/src/components/NouveauFichier.jsx ou null si modification",' +
-    '"filesToModify":["liste fichiers existants a modifier, vide si nouveau fichier"],' +
-    '"spec":"description technique tres detaillee, ligne par ligne",' +
-    '"risks":"risques identifies",' +
-    '"doneCheck":"comment verifier que cest bien fait"}',
+    '"priority":"MUST HAVE ou SHOULD HAVE ou NICE TO HAVE",' +
+    '"why":"pourquoi cette tache maintenant",' +
+    '"outputFile":"frontend/src/components/Fichier.jsx ou null",' +
+    '"filesToModify":["fichiers existants a modifier"],' +
+    '"spec":"spec technique detaillee",' +
+    '"risks":"risques",' +
+    '"doneCheck":"comment verifier"}',
     true
   );
-
   return JSON.parse(result);
 }
 
 // ─── ETAPE 3 : IMPLEMENT ──────────────────────────────────
 async function implement(task, projectFiles, context) {
-  console.log('[Team] Etape 3/6 - Implementation agent ' + task.agent + '...');
+  console.log('[Team] 3/6 Implementation (' + task.agent + ')...');
 
   const allKeys = Object.keys(projectFiles);
-
-  // Charger les fichiers pertinents complets
   const relevant = {};
+
   (task.filesToModify || []).forEach(f => {
-    const key = allKeys.find(k => k.includes(f.split('/').pop().replace('.jsx', '').replace('.js', '')));
+    const base = f.split('/').pop();
+    const key = allKeys.find(k => k.endsWith(base));
     if (key) relevant[key] = projectFiles[key];
   });
 
-  if (task.agent === 'frontend') {
-    ['App.jsx', 'index.css', 'api.js', 'authStore.js', 'Layout.jsx'].forEach(name => {
-      const key = allKeys.find(k => k.endsWith(name));
-      if (key && !relevant[key]) relevant[key] = projectFiles[key];
-    });
-  } else {
-    ['index.js', 'supabase.js', 'auth.js'].forEach(name => {
-      const key = allKeys.find(k => k.endsWith(name));
-      if (key && !relevant[key]) relevant[key] = projectFiles[key];
-    });
-  }
+  const coreFiles = task.agent === 'frontend'
+    ? ['App.jsx', 'index.css', 'api.js', 'authStore.js', 'Layout.jsx']
+    : ['index.js', 'supabase.js', 'auth.js'];
+
+  coreFiles.forEach(name => {
+    const key = allKeys.find(k => k.endsWith(name));
+    if (key && !relevant[key]) relevant[key] = projectFiles[key];
+  });
 
   const contextStr = Object.entries(relevant)
-    .map(([f, c]) => '=== ' + f + ' (complet) ===\n' + c)
+    .map(([f, c]) => '=== ' + f + ' ===\n' + c)
     .join('\n\n');
 
   const rules = task.agent === 'frontend'
-    ? 'REGLES ABSOLUES :\n' +
-      '1. Retourne UNIQUEMENT du code source pur. PAS de markdown. PAS de backticks.\n' +
-      '2. Le code commence directement par "import" ou "const" ou "export".\n' +
-      '3. Un seul composant par fichier.\n' +
-      '4. Utilise UNIQUEMENT les librairies listees dans le contexte projet.\n' +
-      '5. Nimporte pas de fichiers qui nexistent pas (verifie la liste des fichiers existants).\n' +
-      '6. Utilise uniquement les classes CSS : card, btn-primary, btn-secondary, input, badge, et classes Tailwind standard.'
-    : 'REGLES ABSOLUES :\n' +
-      '1. Retourne UNIQUEMENT du code source pur. PAS de markdown. PAS de backticks.\n' +
-      '2. Le code commence par "require(" ou "const" ou "module.exports".\n' +
-      '3. Valide toutes les entrees utilisateur.\n' +
-      '4. Utilise UNIQUEMENT les librairies installees listees dans le contexte.';
+    ? 'REGLES : Code pur uniquement. Pas de markdown. Commence par "import". Un seul composant par fichier. Librairies installees uniquement. Pas dimports de fichiers inexistants.'
+    : 'REGLES : Code pur uniquement. Pas de markdown. Commence par "require(". Valide les entrees. Librairies installees uniquement.';
 
   return await gpt(
-    'Tu es un developpeur ' + task.agent + ' expert.\n' + rules,
-    'SPEC DE LA TACHE :\n' + task.spec +
-    '\n\nRISQUES A EVITER :\n' + task.risks +
-    '\n\nFICHIERS DU PROJET DISPONIBLES (pour les imports) :\n' + allKeys.join('\n') +
-    '\n\nCODE DES FICHIERS CONCERNES :\n' + contextStr.substring(0, 4000)
+    'Tu es developpeur ' + task.agent + ' expert sur BudgetQuest. ' + rules,
+    'SPEC : ' + task.spec + '\n\n' +
+    'RISQUES : ' + task.risks + '\n\n' +
+    'FICHIERS DISPONIBLES : ' + allKeys.join(', ') + '\n\n' +
+    'CODE CONTEXTE :\n' + contextStr.substring(0, 4000)
   );
 }
 
 // ─── ETAPE 4 : REVIEW ─────────────────────────────────────
 async function review(task, code, projectFiles) {
-  console.log('[Team] Etape 4/6 - Review qualite...');
-
+  console.log('[Team] 4/6 Review...');
   const result = await gpt(
-    'Tu es un reviewer de code senior specialise React/Node.js. ' +
-    'Tu verifies la qualite, la coherence, les imports, et les bugs potentiels. Reponds en json.',
-    'SPEC DEMANDEE :\n' + task.spec +
-    '\n\nFICHIERS EXISTANTS (pour verifier les imports) :\n' + Object.keys(projectFiles).join('\n') +
-    '\n\nCODE PRODUIT :\n' + code +
-    '\n\nVerifie : imports valides, pas de librairies manquantes, pas de fichiers fantomes, ' +
-    'coherence avec le projet, qualite du code.\n' +
-    'Retourne ce json :\n' +
-    '{"approved":true ou false,' +
-    '"score":0 a 10,' +
-    '"issues":["liste des problemes"],' +
-    '"fixes":["corrections suggerees"],' +
-    '"summary":"resume en 1 phrase"}',
+    'Tu es reviewer senior React/Node.js. Analyse le code et reponds en json.',
+    'SPEC : ' + task.spec + '\n\n' +
+    'FICHIERS EXISTANTS : ' + Object.keys(projectFiles).join(', ') + '\n\n' +
+    'CODE :\n' + code + '\n\n' +
+    'Verifie : imports valides, pas de fichiers fantomes, coherence, qualite. ' +
+    'Json : {"approved":true,"score":0,"issues":[],"fixes":[],"summary":""}',
     true
   );
-
   return JSON.parse(result);
 }
 
 // ─── ETAPE 5 : FIX ────────────────────────────────────────
-async function fixCode(task, code, reviewResult) {
-  console.log('[Team] Etape 5/6 - Correction (issues: ' + reviewResult.issues.length + ')...');
-
+async function fixCode(code, rev) {
+  console.log('[Team] 5/6 Fix (score ' + rev.score + '/10, ' + rev.issues.length + ' issues)...');
   return await gpt(
-    'Tu es un developpeur expert qui corrige du code suite a une review. ' +
-    'REGLES : Retourne UNIQUEMENT le code corrige complet. PAS de markdown. PAS de backticks. ' +
-    'Corrige EXACTEMENT les problemes listes, ne change rien dautre.',
-    'CODE A CORRIGER :\n' + code +
-    '\n\nPROBLEMES :\n' + reviewResult.issues.join('\n') +
-    '\n\nCORRECTIONS SUGGEREES :\n' + reviewResult.fixes.join('\n')
+    'Tu es developpeur expert. Corrige le code. Code pur uniquement, pas de markdown.',
+    'CODE :\n' + code + '\n\nPROBLEMES :\n' + rev.issues.join('\n') + '\n\nFIXES :\n' + rev.fixes.join('\n')
   );
 }
 
 // ─── ETAPE 6 : BUILD ──────────────────────────────────────
 function buildFrontend() {
-  console.log('[Team] Etape 6/6 - Build Vite...');
+  console.log('[Team] 6/6 Build Vite...');
   try {
-    execSync('npm run build', {
-      cwd: path.join(PROJECT_ROOT, 'frontend'),
-      stdio: 'pipe',
-      timeout: 90000,
-    });
+    execSync('npm run build', { cwd: path.join(PROJECT_ROOT, 'frontend'), stdio: 'pipe', timeout: 90000 });
     return { ok: true };
   } catch (err) {
-    const out = (err.stdout || '').toString() + '\n' + (err.stderr || '').toString();
-    return { ok: false, error: out };
+    return { ok: false, error: (err.stdout || '').toString() + (err.stderr || '').toString() };
   }
 }
 
@@ -273,7 +312,6 @@ function writeFile(relPath, content) {
   let clean = content.trim();
   const block = clean.match(/```(?:jsx?|tsx?|js|ts)?\n?([\s\S]*?)```/);
   if (block) clean = block[1].trim();
-
   const lines = clean.split('\n');
   const start = lines.findIndex(l =>
     l.startsWith('import ') || l.startsWith('const ') ||
@@ -281,41 +319,42 @@ function writeFile(relPath, content) {
   );
   if (start > 0) clean = lines.slice(start).join('\n').trim();
 
-  // Backup si fichier existant
-  if (fs.existsSync(fullPath)) {
-    fs.writeFileSync(fullPath + '.bak', fs.readFileSync(fullPath));
-  }
-
+  if (fs.existsSync(fullPath)) fs.writeFileSync(fullPath + '.bak', fs.readFileSync(fullPath));
   fs.writeFileSync(fullPath, clean, 'utf-8');
-  console.log('[Team] Fichier ecrit : ' + relPath);
+  console.log('[Team] Ecrit : ' + relPath);
 }
 
 // ─── CYCLE COMPLET ────────────────────────────────────────
 async function runCycle(cycleNum) {
-  console.log('\n' + '='.repeat(55));
+  console.log('\n' + '='.repeat(50));
   console.log('[Team] Cycle #' + cycleNum + ' - ' + new Date().toLocaleTimeString());
-  console.log('='.repeat(55));
+  console.log('='.repeat(50));
 
   try {
     const projectFiles = scanProject();
     const doneTasks = loadDone();
-    const context = loadProjectContext();
-    console.log('[Team] ' + Object.keys(projectFiles).length + ' fichiers, ' + doneTasks.length + ' taches passees.');
+    const context = loadContext();
+    const roadmap = loadRoadmap();
+    const priority = getCurrentPriority(roadmap);
+    const remaining = getRemainingTasks(roadmap);
+
+    console.log('[Team] Priorite : ' + priority.emoji + ' ' + priority.level + ' (' + priority.remaining + ' restantes)');
+    console.log('[Team] ' + Object.keys(projectFiles).length + ' fichiers scannes.');
 
     // 1. Brainstorm
-    const bs = await brainstorm(projectFiles, doneTasks, context);
+    const bs = await brainstorm(projectFiles, doneTasks, context, priority, remaining);
     await notify(
-      '🧠 *Cycle #' + cycleNum + ' — Brainstorm*\n\n' +
-      bs.uxCritique.substring(0, 400) + '...'
+      '🧠 *Cycle #' + cycleNum + '* — ' + priority.emoji + ' ' + priority.level + '\n\n' +
+      bs.critique.substring(0, 350) + '...'
     );
 
     // 2. Plan
-    const task = await plan(bs, projectFiles, context);
-    console.log('[Team] Tache : ' + task.title);
+    const task = await plan(bs, projectFiles, context, priority, remaining);
+    console.log('[Team] Tache : [' + task.priority + '] ' + task.title);
     await notify(
-      '📋 *Tache selectionnee :* ' + task.title + '\n' +
-      '_' + task.why + '_\n' +
-      '⚠️ Risques : ' + task.risks
+      '📋 *' + task.title + '*\n' +
+      task.priority + ' — ' + task.why + '\n' +
+      '⚠️ ' + task.risks
     );
 
     // 3. Implement
@@ -323,65 +362,57 @@ async function runCycle(cycleNum) {
 
     // 4. Review
     let rev = await review(task, code, projectFiles);
-    console.log('[Team] Review : ' + rev.score + '/10 - ' + rev.summary);
+    console.log('[Team] Review : ' + rev.score + '/10');
 
-    // 5. Fix si necessaire (max 2 passes)
+    // 5. Fix si necessaire
     let passes = 0;
     while (rev.score < 8 && passes < 2) {
-      console.log('[Team] Score insuffisant (' + rev.score + '/10), correction pass ' + (passes + 1) + '...');
-      code = await fixCode(task, code, rev);
+      code = await fixCode(code, rev);
       rev = await review(task, code, projectFiles);
-      console.log('[Team] Apres correction : ' + rev.score + '/10');
+      console.log('[Team] Apres fix : ' + rev.score + '/10');
       passes++;
     }
 
-    // Abandonner si qualite trop basse
     if (rev.score < 6) {
-      await notify('⚠️ Tache abandonnee : *' + task.title + '* (score ' + rev.score + '/10 apres ' + passes + ' corrections)');
+      await notify('⚠️ Tache abandonnee : *' + task.title + '* (score ' + rev.score + '/10)');
       return;
     }
 
     // 6. Ecrire le fichier
     const target = task.outputFile || (task.filesToModify && task.filesToModify[0]);
-    if (!target) {
-      console.log('[Team] Aucun fichier cible, skip.');
-      return;
-    }
+    if (!target) { console.log('[Team] Pas de fichier cible.'); return; }
     writeFile(target, code);
 
-    // 7. Build check
+    // 7. Build
     const build = buildFrontend();
     if (!build.ok) {
-      console.log('[Team] Build KO, tentative correction auto...');
-      const fixedCode = await gpt(
-        'Tu es un expert debug React/Vite. Corrige le code pour que le build reussisse. ' +
-        'Retourne UNIQUEMENT le code corrige, sans markdown, sans backticks.',
-        'ERREUR BUILD :\n' + build.error.substring(0, 2000) + '\n\nCODE ACTUEL :\n' + code
+      console.log('[Team] Build KO, correction auto...');
+      const fixed = await gpt(
+        'Expert debug React/Vite. Corrige le code. Code pur, pas de markdown.',
+        'ERREUR :\n' + build.error.substring(0, 2000) + '\n\nCODE :\n' + code
       );
-      writeFile(target, fixedCode);
-
+      writeFile(target, fixed);
       const rebuild = buildFrontend();
       if (!rebuild.ok) {
-        // Restaurer backup
         const bak = path.join(PROJECT_ROOT, target + '.bak');
-        if (fs.existsSync(bak)) {
-          fs.copyFileSync(bak, path.join(PROJECT_ROOT, target));
-          console.log('[Team] Backup restaure.');
-        }
-        await notifyError('Build echoue pour "' + task.title + '". Fichier restaure.');
+        if (fs.existsSync(bak)) fs.copyFileSync(bak, path.join(PROJECT_ROOT, target));
+        await notifyError('Build echoue pour "' + task.title + '". Backup restaure.');
         return;
       }
     }
 
-    // Nettoyer les backups apres succes
+    // Nettoyer backup
     const bakPath = path.join(PROJECT_ROOT, target + '.bak');
     if (fs.existsSync(bakPath)) fs.unlinkSync(bakPath);
 
-    // 8. Push
+    // 8. Push + mise a jour roadmap
     saveDone(task.title);
-    await commitAndPush('feat: ' + task.title + ' [' + rev.score + '/10]', ['.']);
+    tickRoadmap(loadRoadmap(), task.title);
+    await commitAndPush('feat(' + task.priority.replace(/ /g, '-').toLowerCase() + '): ' + task.title + ' [' + rev.score + '/10]', ['.']);
+
     await notify(
-      '✅ *Cycle #' + cycleNum + ' termine !*\n\n' +
+      '✅ *Cycle #' + cycleNum + ' termine*\n\n' +
+      priority.emoji + ' ' + task.priority + '\n' +
       '📦 *' + task.title + '*\n' +
       '⭐ Score : ' + rev.score + '/10\n' +
       '📝 ' + rev.summary + '\n\n' +
@@ -389,35 +420,34 @@ async function runCycle(cycleNum) {
     );
 
   } catch (err) {
-    console.error('[Team] Erreur cycle #' + cycleNum + ' :', err.message);
+    console.error('[Team] Erreur cycle #' + cycleNum + ':', err.message);
     await notifyError('Erreur cycle #' + cycleNum + ' : ' + err.message);
   }
 }
 
 // ─── Demarrage ────────────────────────────────────────────
 async function start() {
-  console.log('BudgetQuest - Equipe Intelligente');
-  console.log('Brainstorm -> Plan -> Implement -> Review -> Fix -> Build -> Push');
+  console.log('BudgetQuest - Equipe Intelligente avec Roadmap');
+  console.log('Must Have > Should Have > Nice to Have');
   console.log('Intervalle : ' + (CYCLE_INTERVAL_MS / 60000) + ' min\n');
 
+  const roadmap = loadRoadmap();
+  const priority = getCurrentPriority(roadmap);
+  const remaining = getRemainingTasks(roadmap);
+
   await notify(
-    '🚀 *Equipe Intelligente activee*\n\n' +
-    'Processus par cycle :\n' +
-    '• Brainstorm (3 agents)\n' +
-    '• Selection de la meilleure tache\n' +
-    '• Implementation avec contexte complet\n' +
-    '• Review qualite (score /10)\n' +
-    '• Build Vite obligatoire\n' +
-    '• Push seulement si tout est vert\n\n' +
-    '1 tache par cycle, toutes les ' + (CYCLE_INTERVAL_MS / 60000) + ' min.\n\n' +
-    'Commandes : /status /debug /help'
+    '🚀 *Equipe BudgetQuest activee*\n\n' +
+    'Priorite actuelle : ' + priority.emoji + ' *' + priority.level + '*\n' +
+    priority.remaining + ' taches restantes\n\n' +
+    'Prochaines a faire :\n' + remaining.slice(0, 4).map(t => '• ' + t).join('\n') + '\n\n' +
+    'Processus : Brainstorm → Plan → Code → Review → Build → Push\n' +
+    'Commandes : /status /debug /roadmap /help'
   );
 
   let n = 1;
   await runCycle(n++);
   setInterval(() => runCycle(n++), CYCLE_INTERVAL_MS);
 
-  // Telegram
   const { bot } = require('./telegram');
   const { runDebugCycle } = require('./agents/debugAgent');
   const { getRepoStatus } = require('./agents/devopsAgent');
@@ -429,11 +459,22 @@ async function start() {
 
     if (text === '/status') {
       const s = await getRepoStatus();
-      await bot.sendMessage(chatId, '📊 *Status*\n\n' + s.recentCommits.map(c => '• ' + c.message).join('\n'), { parse_mode: 'Markdown' });
+      await bot.sendMessage(chatId, '📊 *Commits*\n\n' + s.recentCommits.map(c => '• ' + c.message).join('\n'), { parse_mode: 'Markdown' });
+      return;
+    }
+    if (text === '/roadmap') {
+      const rm = loadRoadmap();
+      const pr = getCurrentPriority(rm);
+      const rem = getRemainingTasks(rm);
+      await bot.sendMessage(chatId,
+        '📋 *Roadmap*\n\nPriorite : ' + pr.emoji + ' ' + pr.level + '\n\nA faire :\n' +
+        rem.slice(0, 8).map(t => '• ' + t).join('\n'),
+        { parse_mode: 'Markdown' }
+      );
       return;
     }
     if (text === '/debug') {
-      await bot.sendMessage(chatId, '🔍 Debug en cours...');
+      await bot.sendMessage(chatId, '🔍 Debug...');
       const r = await runDebugCycle();
       if (!r.hasErrors) await bot.sendMessage(chatId, '✅ Build OK.');
       else if (r.fixed > 0) { await commitAndPush('fix: auto-debug', ['frontend']); await bot.sendMessage(chatId, '🔧 ' + r.fixed + ' erreur(s) corrigee(s).'); }
@@ -441,7 +482,10 @@ async function start() {
       return;
     }
     if (text === '/help') {
-      await bot.sendMessage(chatId, '🎮 *BudgetQuest*\n\n/status - Commits\n/debug - Fix erreurs\n/help - Aide\n\nOu envoie une directive libre.', { parse_mode: 'Markdown' });
+      await bot.sendMessage(chatId,
+        '🎮 *BudgetQuest*\n\n/roadmap - Voir la roadmap\n/status - Commits\n/debug - Fix erreurs\n/help - Aide\n\nOu envoie une directive libre.',
+        { parse_mode: 'Markdown' }
+      );
       return;
     }
     if (text.startsWith('/')) return;
@@ -449,21 +493,25 @@ async function start() {
     // Directive libre
     await notify('📌 *Directive :* ' + text);
     const pf = scanProject();
-    const ctx = loadProjectContext();
+    const ctx = loadContext();
+    const rm = loadRoadmap();
+    const pr = getCurrentPriority(rm);
+    const rem = getRemainingTasks(rm);
 
     const task = JSON.parse(await gpt(
-      'Tu es le chef de projet BudgetQuest. Cree un plan pour cette directive. Reponds en json.',
-      'DIRECTIVE : ' + text +
-      '\n\nCONTEXTE :\n' + ctx.substring(0, 2000) +
-      '\n\nFICHIERS :\n' + Object.keys(pf).join('\n') +
-      '\n\nJson : {"agent":"frontend ou backend","title":"...","why":"...","outputFile":"frontend/src/.../Fichier.jsx ou null","filesToModify":[],"spec":"spec detaillee","risks":"...","doneCheck":"..."}',
+      'Chef de projet BudgetQuest. Plan pour directive. Respecte la priorite. Reponds en json.',
+      'PRIORITE : ' + pr.emoji + ' ' + pr.level + '\n' +
+      'DIRECTIVE : ' + text + '\n' +
+      'CONTEXTE :\n' + ctx.substring(0, 1500) + '\n' +
+      'FICHIERS :\n' + Object.keys(pf).join('\n') + '\n' +
+      'Json : {"agent":"frontend ou backend","title":"...","priority":"...","why":"...","outputFile":"... ou null","filesToModify":[],"spec":"...","risks":"...","doneCheck":"..."}',
       true
     ));
 
     let code = await implement(task, pf, ctx);
     let rev = await review(task, code, pf);
     let p = 0;
-    while (rev.score < 8 && p < 2) { code = await fixCode(task, code, rev); rev = await review(task, code, pf); p++; }
+    while (rev.score < 8 && p < 2) { code = await fixCode(code, rev); rev = await review(task, code, pf); p++; }
 
     const target = task.outputFile || (task.filesToModify && task.filesToModify[0]);
     if (target) {
@@ -471,19 +519,20 @@ async function start() {
       const build = buildFrontend();
       if (build.ok) {
         saveDone(task.title);
+        tickRoadmap(loadRoadmap(), task.title);
         await commitAndPush('feat: ' + task.title + ' (directive) [' + rev.score + '/10]', ['.']);
-        await notify('✅ *Directive executee :* ' + task.title + ' [' + rev.score + '/10]');
+        await notify('✅ *' + task.title + '* [' + rev.score + '/10]\n' + rev.summary);
       } else {
         const bak = path.join(PROJECT_ROOT, target + '.bak');
         if (fs.existsSync(bak)) fs.copyFileSync(bak, path.join(PROJECT_ROOT, target));
-        await notifyError('Build echoue pour directive "' + task.title + '". Backup restaure.');
+        await notifyError('Build echoue. Backup restaure.');
       }
     }
   });
 }
 
 start().catch(async err => {
-  console.error('Erreur :', err);
+  console.error('Erreur fatale:', err);
   await notifyError('Erreur fatale : ' + err.message);
   process.exit(1);
 });
