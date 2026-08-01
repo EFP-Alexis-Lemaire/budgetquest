@@ -19,9 +19,10 @@ Quand tu génères du code :
 - Respecte la structure existante du projet
 - Documente les parties complexes
 - Pense à la sécurité (validation, sanitization)
-- Retourne UNIQUEMENT le code demandé, sans explications superflues
+- Retourne UNIQUEMENT le code JavaScript demandé, sans explications superflues
 
-Tu peux lire les fichiers existants si nécessaire pour comprendre le contexte.`;
+Tu peux lire les fichiers existants si nécessaire pour comprendre le contexte.
+Ne retourne jamais de json dans ta réponse, uniquement du code source.`;
 
 /**
  * Demande à l'agent backend d'effectuer une tâche

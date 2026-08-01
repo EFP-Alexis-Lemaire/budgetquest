@@ -159,7 +159,7 @@ Réponds true UNIQUEMENT si :
 - La tâche est fondamentalement ambiguë (plusieurs directions très différentes possibles)
 
 Réponds false pour TOUT le reste (design, features, corrections, améliorations).
-Réponds UNIQUEMENT : {"ask": true/false, "question": "..." }`
+Réponds UNIQUEMENT en json : {"ask": true/false, "question": "..." }`
       },
       { role: 'user', content: `Tâche : ${task.description}` },
     ],
@@ -316,7 +316,7 @@ async function start() {
           {
             role: 'system',
             content: `Détermine l'agent pour cette tâche BudgetQuest.
-Réponds JSON : {"agent":"frontend"|"backend","title":"titre court","description":"description détaillée","outputFile":"chemin/fichier.jsx ou null"}`
+Réponds en json : {"agent":"frontend"|"backend","title":"titre court","description":"description détaillée","outputFile":"chemin/fichier.jsx ou null"}`
           },
           { role: 'user', content: text },
         ],

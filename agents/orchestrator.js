@@ -58,7 +58,7 @@ NE PAS poser de question pour :
 - Des améliorations mineures
 - Des ajouts de features déjà spécifiées
 
-Réponds uniquement avec JSON : {"ask": true/false, "question": "...", "context": "..."}`
+Réponds uniquement en json : {"ask": true/false, "question": "...", "context": "..."}`
       },
       { role: 'user', content: `Tâche : ${task}` },
     ],
@@ -162,7 +162,7 @@ async function main() {
             role: 'system',
             content: `Détermine quel agent doit traiter cette tâche pour le projet BudgetQuest.
 Agents disponibles : "backend" (Express/API/DB), "frontend" (React/UI), "devops" (Git/Deploy).
-Réponds uniquement JSON : {"agent": "...", "description": "description détaillée de ce que l'agent doit faire", "outputFile": "chemin/du/fichier/à/créer.js ou null"}`
+Réponds uniquement en json : {"agent": "...", "description": "description détaillée de ce que l'agent doit faire", "outputFile": "chemin/du/fichier/à/créer.js ou null"}`
           },
           { role: 'user', content: text },
         ],
