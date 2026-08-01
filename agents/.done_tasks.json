@@ -10,5 +10,9 @@
   {
     "task": "Fix HTTP Proxy Error for /api/auth/register",
     "at": "2026-08-01T12:07:12.526Z"
+  },
+  {
+    "task": "Ajout de commentaires de log pour les erreurs de connexion et de création de compte",
+    "at": "2026-08-01T12:08:55.432Z"
   }
 ]
