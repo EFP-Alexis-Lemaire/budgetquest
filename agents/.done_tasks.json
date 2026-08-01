@@ -2,5 +2,9 @@
   {
     "task": "Déconnexion propre avec suppression du token",
     "at": "2026-08-01T12:00:41.921Z"
+  },
+  {
+    "task": "Fix HTTP Proxy Error on /api/auth/register",
+    "at": "2026-08-01T12:05:05.909Z"
   }
 ]
