@@ -14,5 +14,9 @@
   {
     "task": "Améliorer la page Analytics avec un graphique en camembert",
     "done_at": "2026-08-01T11:09:35.553Z"
+  },
+  {
+    "task": "Ajout de modes sombre, clair et automatique",
+    "done_at": "2026-08-01T11:11:44.450Z"
   }
 ]
