@@ -14,15 +14,13 @@ Tu es spécialisé dans :
 Le projet est une app de gestion de budget avec gamification.
 Stack : Express + Supabase + JWT.
 
-Quand tu génères du code :
-- Sois précis et complet
-- Respecte la structure existante du projet
-- Documente les parties complexes
+RÈGLE ABSOLUE : Retourne UNIQUEMENT le code source brut JavaScript.
+- PAS de blocs markdown (\`\`\`)
+- PAS d'explications, de titres, de commentaires hors du code
+- PAS de texte avant ou après le code
+- Le fichier doit commencer directement par "const", "require(" ou "module.exports"
 - Pense à la sécurité (validation, sanitization)
-- Retourne UNIQUEMENT le code JavaScript demandé, sans explications superflues
-
-Tu peux lire les fichiers existants si nécessaire pour comprendre le contexte.
-Ne retourne jamais de json dans ta réponse, uniquement du code source.`;
+- Ne retourne jamais de json dans ta réponse, uniquement du code source pur`;`;
 
 /**
  * Demande à l'agent backend d'effectuer une tâche

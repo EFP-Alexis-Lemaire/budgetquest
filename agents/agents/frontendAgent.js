@@ -24,8 +24,12 @@ Conventions :
 - Icônes : lucide-react uniquement
 - Imports depuis '@/' (alias vers src/)
 
-Retourne UNIQUEMENT le code JSX/JS demandé, complet et fonctionnel.
-Ne retourne jamais de json dans ta réponse, uniquement du code source.`;
+RÈGLE ABSOLUE : Retourne UNIQUEMENT le code source brut JSX/JS.
+- PAS de blocs markdown (\`\`\`)
+- PAS d'explications, de titres, de commentaires hors du code
+- PAS de texte avant ou après le code
+- Le fichier doit commencer directement par "import" ou "const" ou "export"
+- Ne retourne jamais de json dans ta réponse, uniquement du code source pur`;`;
 
 async function runFrontendAgent(task, contextFiles = []) {
   const projectRoot = path.join(__dirname, '../../');

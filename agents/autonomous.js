@@ -170,14 +170,73 @@ Réponds UNIQUEMENT en json : {"ask": true/false, "question": "..." }`
   return JSON.parse(response.choices[0].message.content);
 }
 
+// ─── Nettoyage du code généré ────────────────────────────
+function extractCleanCode(content) {
+  // 1. Extraire le premier bloc de code si présent
+  const blockMatch = content.match(/```(?:jsx?|tsx?|javascript|typescript|js|ts)?\n([\s\S]*?)```/);
+  if (blockMatch) return blockMatch[1].trim();
+
+  // 2. Si pas de bloc mais contient du markdown (##, **, ---)
+  // → chercher la partie qui ressemble à du vrai code JS/JSX
+  const lines = content.split('\n');
+  const codeStart = lines.findIndex(l =>
+    l.startsWith('import ') ||
+    l.startsWith('const ') ||
+    l.startsWith('export ') ||
+    l.startsWith('function ') ||
+    l.startsWith('require(')
+  );
+
+  if (codeStart !== -1) {
+    // Prendre tout à partir de la première ligne de code
+    return lines.slice(codeStart).join('\n').trim();
+  }
+
+  // 3. Retourner tel quel si aucun markdown détecté
+  return content.trim();
+}
+
+// ─── Validation syntaxique basique ───────────────────────
+function validateCode(content, filePath) {
+  const ext = path.extname(filePath);
+  if (!['.js', '.jsx', '.ts', '.tsx'].includes(ext)) return true;
+
+  // Détecter du markdown résiduel
+  const markdownSigns = ['### ', '## ', '** ', '- **', '* **', '---\n'];
+  for (const sign of markdownSigns) {
+    if (content.includes(sign)) {
+      console.error(`[Autonomous] ❌ Markdown détecté dans le code : "${sign}"`);
+      return false;
+    }
+  }
+
+  // Vérifier les balises de code résiduelles
+  if (content.includes('```')) {
+    console.error(`[Autonomous] ❌ Backticks résiduels détectés`);
+    return false;
+  }
+
+  return true;
+}
+
 // ─── Écriture fichier ────────────────────────────────────
 function writeFile(relativePath, content) {
   const fullPath = path.join(PROJECT_ROOT, relativePath);
   const dir = path.dirname(fullPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  // Nettoyer les blocs markdown si présents
-  const clean = content.replace(/^```(?:jsx?|tsx?|javascript|typescript)?\n?/m, '').replace(/```\s*$/m, '').trim();
+  const clean = extractCleanCode(content);
+
+  // Valider avant d'écrire
+  if (!validateCode(clean, relativePath)) {
+    throw new Error(`Code invalide (markdown résiduel) dans ${relativePath}. L'agent a retourné du texte au lieu de code pur.`);
+  }
+
+  // Backup de l'ancien fichier si existant
+  if (fs.existsSync(fullPath)) {
+    fs.writeFileSync(fullPath + '.bak', fs.readFileSync(fullPath), 'utf-8');
+  }
+
   fs.writeFileSync(fullPath, clean, 'utf-8');
   console.log(`[Autonomous] ✅ Fichier écrit : ${relativePath}`);
 }
