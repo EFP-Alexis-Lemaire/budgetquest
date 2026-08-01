@@ -20,7 +20,7 @@ RÈGLE ABSOLUE : Retourne UNIQUEMENT le code source brut JavaScript.
 - PAS de texte avant ou après le code
 - Le fichier doit commencer directement par "const", "require(" ou "module.exports"
 - Pense à la sécurité (validation, sanitization)
-- Ne retourne jamais de json dans ta réponse, uniquement du code source pur`;`;
+- Ne retourne jamais de json dans ta réponse, uniquement du code source pur`;
 
 /**
  * Demande à l'agent backend d'effectuer une tâche
