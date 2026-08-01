@@ -1,36 +1,70 @@
-import { useEffect, useState } from 'react';
-import { Sparkles } from 'lucide-react';
-import useSound from 'use-sound';
-import levelUpSound from '../assets/sounds/level-up.mp3';
+// frontend/src/components/Badge.jsx
+import { BadgeCheck } from 'lucide-react';
 
-const XpBar = ({ currentXp, maxXp }) => {
-  const [play] = useSound(levelUpSound);
-  const [showSparkles, setShowSparkles] = useState(false);
+const Badge = ({ title, description }) => (
+  <div className="badge bg-primary-600 text-white">
+    <BadgeCheck className="w-4 h-4" />
+    <div>
+      <div className="font-bold">{title}</div>
+      <div className="text-xs">{description}</div>
+    </div>
+  </div>
+);
 
-  useEffect(() => {
-    if (currentXp >= maxXp) {
-      play();
-      setShowSparkles(true);
-      const timer = setTimeout(() => setShowSparkles(false), 1500);
-      return () => clearTimeout(timer);
-    }
-  }, [currentXp, maxXp, play]);
+export default Badge;
 
-  const xpPercentage = (currentXp / maxXp) * 100;
+// frontend/src/pages/DashboardPage.jsx
+import { useQuery } from '@tanstack/react-query';
+import api from '../lib/api';
+import Badge from '../components/Badge';
+
+const DashboardPage = () => {
+  const { data: badges } = useQuery(['badges'], async () => {
+    const { data } = await api.get('/badges');
+    return data;
+  });
 
   return (
-    <div className="relative w-full h-8 bg-gray-800 rounded-full overflow-hidden">
-      <div
-        className="h-full bg-primary-600 transition-all duration-300"
-        style={{ width: `${xpPercentage}%` }}
-      />
-      {showSparkles && (
-        <div className="absolute inset-0 flex justify-center items-center">
-          <Sparkles className="text-primary-500 animate-ping" size={48} />
-        </div>
-      )}
+    <div className="card">
+      <h1 className="text-2xl font-bold mb-4">Dashboard</h1>
+      <div className="flex flex-wrap gap-4">
+        {badges?.map((badge) => (
+          <Badge key={badge.id} title={badge.title} description={badge.description} />
+        ))}
+      </div>
     </div>
   );
 };
 
-export default XpBar;
+export default DashboardPage;
+
+// frontend/src/pages/ProfilePage.jsx
+import { useQuery } from '@tanstack/react-query';
+import api from '../lib/api';
+import Badge from '../components/Badge';
+
+const ProfilePage = () => {
+  const { data: badges } = useQuery(['userBadges'], async () => {
+    const { data } = await api.get('/user/badges');
+    return data;
+  });
+
+  return (
+    <div className="card">
+      <h1 className="text-2xl font-bold mb-4">Profile</h1>
+      <div className="flex flex-wrap gap-4">
+        {badges?.map((badge) => (
+          <Badge key={badge.id} title={badge.title} description={badge.description} />
+        ))}
+      </div>
+    </div>
+  );
+};
+
+export default ProfilePage;
+
+// frontend/src/App.jsx
+import ProfilePage from './pages/ProfilePage';
+
+// Add the ProfilePage route
+<Route path="profile" element={<ProfilePage />} />

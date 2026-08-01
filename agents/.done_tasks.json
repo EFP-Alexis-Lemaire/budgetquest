@@ -30,5 +30,13 @@
   {
     "task": "Amélioration de l'interface utilisateur",
     "done_at": "2026-08-01T11:18:33.014Z"
+  },
+  {
+    "task": "Add Reward Badges for Milestones",
+    "done_at": "2026-08-01T11:19:48.190Z"
+  },
+  {
+    "task": "Improve Transaction Search Functionality",
+    "done_at": "2026-08-01T11:19:53.811Z"
   }
 ]
