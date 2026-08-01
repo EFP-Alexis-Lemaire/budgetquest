@@ -22,5 +22,9 @@
   {
     "task": "Ajouter des feedbacks visuels et sonores pour la progression XP",
     "done_at": "2026-08-01T11:14:46.663Z"
+  },
+  {
+    "task": "Implémenter un système de challenges quotidiens",
+    "done_at": "2026-08-01T11:14:52.466Z"
   }
 ]
