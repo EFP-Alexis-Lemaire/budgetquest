@@ -1,58 +1,3 @@
-require('express');
-require('jsonwebtoken');
-require('../lib/supabase');
-
-const express = require('express');
-const router = express.Router();
-const jwt = require('jsonwebtoken');
-const supabase = require('../lib/supabase');
-
-let blacklistedTokens = new Set();
-
-router.post('/register', async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email et mot de passe requis' });
-  }
-
-  try {
-    const { user, error } = await supabase.auth.signUp({ email, password });
-
-    if (error) {
-      return res.status(400).json({ error: error.message });
-    }
-
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-    res.status(201).json({ token });
-  } catch (err) {
-    res.status(500).json({ error: 'Erreur lors de l\'enregistrement' });
-  }
-});
-
-router.post('/logout', (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  if (!token) {
-    return res.status(400).json({ error: 'Token manquant' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    blacklistedTokens.add(token);
-
-    res.json({ message: 'Déconnexion réussie' });
-  } catch (err) {
-    res.status(401).json({ error: 'Token invalide' });
-  }
-});
-
-function isTokenBlacklisted(token) {
-  return blacklistedTokens.has(token);
-}
-
-module.exports = { router, isTokenBlacklisted };
-
 require('dotenv').config({ path: '../.env' });
 const express = require('express');
 const cors = require('cors');
@@ -121,3 +66,11 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
+
+// Investigation Steps
+// 1. Ensure the server is running: Verify that the server is started without errors and is listening on the expected port (3001 by default).
+// 2. Check for network issues: Ensure there are no firewall rules or network configurations preventing access to the server port.
+// 3. Validate Vite proxy configuration: Ensure the Vite development server is correctly configured to proxy requests to the backend server.
+// 4. Test connectivity: Use tools like curl or Postman to test if the backend server is accessible at the specified endpoint.
+// 5. Check logs: Review server logs for any error messages or connection attempts that might indicate the source of the ECONNREFUSED error.
+// 6. Verify environment variables: Ensure that all necessary environment variables, especially PORT and FRONTEND_URL, are correctly set.
