@@ -1,81 +1,48 @@
-import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Trash2, PlusCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import api from '../lib/api';
+import { Input } from '../components/Input';
 
-const BudgetPage = () => {
-  const queryClient = useQueryClient();
-  const { data: budgets, isLoading } = useQuery(['budgets'], () =>
-    api.get('/budgets').then((res) => res.data)
-  );
+const fetchSuggestions = async () => {
+  const { data } = await api.get('/budgets/suggestions');
+  return data;
+};
 
-  const addBudgetMutation = useMutation(
-    (newBudget) => api.post('/budgets', newBudget),
-    {
-      onSuccess: () => queryClient.invalidateQueries(['budgets']),
+export default function BudgetInput() {
+  const [inputValue, setInputValue] = useState('');
+  const [filteredSuggestions, setFilteredSuggestions] = useState([]);
+  const { data: suggestions } = useQuery(['budgetSuggestions'], fetchSuggestions);
+
+  useEffect(() => {
+    if (suggestions) {
+      const filtered = suggestions.filter((suggestion) =>
+        suggestion.toLowerCase().includes(inputValue.toLowerCase())
+      );
+      setFilteredSuggestions(filtered);
     }
-  );
-
-  const deleteBudgetMutation = useMutation(
-    (id) => api.delete(`/budgets/${id}`),
-    {
-      onSuccess: () => queryClient.invalidateQueries(['budgets']),
-    }
-  );
-
-  const [newBudget, setNewBudget] = useState('');
-
-  const handleAddBudget = () => {
-    if (newBudget.trim()) {
-      addBudgetMutation.mutate({ name: newBudget });
-      setNewBudget('');
-    }
-  };
+  }, [inputValue, suggestions]);
 
   return (
-    <div className="card">
-      <h1 className="text-2xl font-bold mb-4">Budgets</h1>
-      <div className="flex items-center mb-4">
-        <input
-          type="text"
-          className="input mr-2"
-          placeholder="New Budget"
-          value={newBudget}
-          onChange={(e) => setNewBudget(e.target.value)}
-        />
-        <button
-          className="btn-primary flex items-center"
-          onClick={handleAddBudget}
-        >
-          <PlusCircle className="mr-1" size={20} />
-          Add
-        </button>
-      </div>
-      {isLoading ? (
-        <p>Loading...</p>
-      ) : (
-        <ul className="space-y-2">
-          {budgets.map((budget) => (
+    <div className="relative">
+      <Input
+        className="input"
+        placeholder="Enter budget..."
+        value={inputValue}
+        onChange={(e) => setInputValue(e.target.value)}
+      />
+      {filteredSuggestions.length > 0 && (
+        <ul className="absolute bg-gray-800 border border-gray-700 rounded-xl mt-1 w-full max-h-40 overflow-y-auto">
+          {filteredSuggestions.map((suggestion, index) => (
             <li
-              key={budget.id}
-              className={`flex justify-between items-center p-4 bg-gray-800 rounded-xl transition-transform transform hover:scale-105 ${
-                budget.exceeded ? 'border border-red-500' : ''
-              }`}
+              key={index}
+              className="px-4 py-2 hover:bg-gray-700 cursor-pointer"
+              onClick={() => setInputValue(suggestion)}
             >
-              <span>{budget.name}</span>
-              <button
-                className="btn-secondary flex items-center"
-                onClick={() => deleteBudgetMutation.mutate(budget.id)}
-              >
-                <Trash2 className="mr-1" size={20} />
-                Delete
-              </button>
+              {suggestion}
             </li>
           ))}
         </ul>
       )}
     </div>
   );
-};
-
-export default BudgetPage;
+}

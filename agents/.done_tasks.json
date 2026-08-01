@@ -58,5 +58,13 @@
   {
     "task": "Notification de nouveaux challenges quotidiens",
     "done_at": "2026-08-01T11:29:51.311Z"
+  },
+  {
+    "task": "Ajouter des quêtes dynamiques",
+    "done_at": "2026-08-01T11:30:10.575Z"
+  },
+  {
+    "task": "Ajouter l'autocomplétion pour la saisie des budgets",
+    "done_at": "2026-08-01T11:30:13.462Z"
   }
 ]
