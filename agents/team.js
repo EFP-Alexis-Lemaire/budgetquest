@@ -1,17 +1,17 @@
 /**
- * BudgetQuest - Équipe intelligente d'agents
+ * BudgetQuest - Equipe intelligente d'agents
  *
  * Processus par cycle :
- *  1. SCAN      — Lire tout le code existant
- *  2. BRAINSTORM — Les agents débattent et proposent des idées
- *  3. PLAN      — Un chef de projet sélectionne et détaille UNE tâche
- *  4. IMPLEMENT — L'agent implémente avec le contexte complet
- *  5. REVIEW    — Un reviewer critique le code produit
- *  6. FIX       — L'implémenteur corrige si nécessaire (max 2 passes)
- *  7. BUILD     — Vite build pour valider la compilation
- *  8. PUSH      — Commit et push seulement si tout est vert
+ *  1. SCAN       - Lire tout le code + contexte projet
+ *  2. BRAINSTORM - 3 agents debattent et proposent des idees
+ *  3. PLAN       - Chef de projet selectionne UNE tache avec spec detaillee
+ *  4. IMPLEMENT  - Agent implemente avec contexte complet
+ *  5. REVIEW     - Reviewer critique le code produit (score 0-10)
+ *  6. FIX        - Correction si score < 8 (max 2 passes)
+ *  7. BUILD      - Vite build obligatoire
+ *  8. PUSH       - Commit seulement si build vert
  *
- * Une seule tâche par cycle, bien faite.
+ * Une seule tache bien faite toutes les 15 minutes.
  */
 
 require('dotenv').config({ path: '../.env' });
@@ -26,11 +26,9 @@ const { commitAndPush } = require('./agents/devopsAgent');
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const PROJECT_ROOT = path.join(__dirname, '../');
 const DONE_FILE = path.join(__dirname, '.done_tasks.json');
+const CYCLE_INTERVAL_MS = 15 * 60 * 1000;
 
-// ─── Config ──────────────────────────────────────────────
-const CYCLE_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes entre cycles
-
-// ─── Mémoire ─────────────────────────────────────────────
+// ─── Memoire ─────────────────────────────────────────────
 function loadDone() {
   if (!fs.existsSync(DONE_FILE)) return [];
   return JSON.parse(fs.readFileSync(DONE_FILE, 'utf-8'));
@@ -41,32 +39,33 @@ function saveDone(task) {
   fs.writeFileSync(DONE_FILE, JSON.stringify(done, null, 2));
 }
 
-// ─── Scanner le projet ───────────────────────────────────
+// ─── Contexte projet ──────────────────────────────────────
+function loadProjectContext() {
+  const p = path.join(__dirname, 'PROJECT_CONTEXT.md');
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : '';
+}
+
+// ─── Scanner le projet ────────────────────────────────────
 function scanProject() {
   const files = {};
   const dirs = [
-    'frontend/src/pages',
-    'frontend/src/components',
-    'frontend/src/store',
-    'frontend/src/lib',
-    'backend/src/routes',
-    'backend/src',
+    'frontend/src/pages', 'frontend/src/components',
+    'frontend/src/store', 'frontend/src/lib',
+    'backend/src/routes', 'backend/src',
   ];
-
   for (const dir of dirs) {
     const full = path.join(PROJECT_ROOT, dir);
     if (!fs.existsSync(full)) continue;
     fs.readdirSync(full).forEach(f => {
       if (!f.match(/\.(js|jsx)$/)) return;
       const rel = dir + '/' + f;
-      const content = fs.readFileSync(path.join(full, f), 'utf-8');
-      files[rel] = content;
+      files[rel] = fs.readFileSync(path.join(full, f), 'utf-8');
     });
   }
   return files;
 }
 
-// ─── Appel GPT avec retry ─────────────────────────────────
+// ─── Appel GPT ────────────────────────────────────────────
 async function gpt(systemMsg, userMsg, json = false) {
   const opts = {
     model: 'gpt-4o',
@@ -78,185 +77,181 @@ async function gpt(systemMsg, userMsg, json = false) {
     max_tokens: 4096,
   };
   if (json) opts.response_format = { type: 'json_object' };
-
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let i = 0; i < 3; i++) {
     try {
       const res = await openai.chat.completions.create(opts);
       return res.choices[0].message.content;
     } catch (err) {
-      if (attempt === 2) throw err;
+      if (i === 2) throw err;
       await new Promise(r => setTimeout(r, 3000));
     }
   }
 }
 
-// ─── ÉTAPE 1 : BRAINSTORM ─────────────────────────────────
-async function brainstorm(projectFiles, doneTasks) {
-  console.log('\n[Team] 🧠 Étape 1/6 — Brainstorm...');
+// ─── ETAPE 1 : BRAINSTORM ─────────────────────────────────
+async function brainstorm(projectFiles, doneTasks, context) {
+  console.log('\n[Team] Etape 1/6 - Brainstorm...');
 
   const fileList = Object.keys(projectFiles).join('\n');
   const doneList = doneTasks.slice(-15).map(t => '- ' + t.task).join('\n') || 'Aucune';
 
-  // Agent Frontend propose
+  const baseContext = 'CONTEXTE PROJET COMPLET :\n' + context +
+    '\n\nFICHIERS EXISTANTS :\n' + fileList +
+    '\n\nTACHES DEJA FAITES (ne pas repeter) :\n' + doneList;
+
   const frontendIdeas = await gpt(
-    'Tu es un développeur frontend senior React/TailwindCSS qui travaille sur BudgetQuest, une app de gestion de budget gamifiée (RPG). Tu dois proposer des améliorations concrètes et impactantes pour les utilisateurs. Sois créatif mais réaliste.',
-    'Voici les fichiers existants :\n' + fileList +
-    '\n\nTâches déjà faites :\n' + doneList +
-    '\n\nPropose 3 améliorations frontend prioritaires. Pour chaque idée : titre, impact utilisateur, complexité (faible/moyenne/haute), risque (modifier fichier existant vs créer nouveau fichier).'
+    'Tu es un developpeur frontend senior React/TailwindCSS expert sur BudgetQuest. ' +
+    'Tu connais les regles du projet et tu proposes uniquement des ameliorations realisables ' +
+    'avec les librairies installees. Tu preferes creer de nouveaux fichiers plutot que modifier lexistant.',
+    baseContext + '\n\nPropose 3 ameliorations frontend. Pour chacune : titre, impact utilisateur, ' +
+    'complexite (faible/moyenne/haute), fichier cible (nouveau ou existant), risque.'
   );
 
-  // Agent Backend propose
   const backendIdeas = await gpt(
-    'Tu es un développeur backend senior Node.js/Express/Supabase qui travaille sur BudgetQuest. Tu dois proposer des améliorations concrètes côté API, données et logique métier.',
-    'Voici les fichiers existants :\n' + fileList +
-    '\n\nTâches déjà faites :\n' + doneList +
-    '\n\nPropose 3 améliorations backend prioritaires. Pour chaque idée : titre, impact utilisateur, complexité, risque.'
+    'Tu es un developpeur backend senior Node.js/Express/Supabase expert sur BudgetQuest. ' +
+    'Tu connais les regles du projet et tu proposes uniquement des ameliorations realisables.',
+    baseContext + '\n\nPropose 3 ameliorations backend. Pour chacune : titre, impact, complexite, fichier cible, risque.'
   );
 
-  // Agent UX/Qualité critique
   const uxCritique = await gpt(
-    'Tu es un expert UX et qualité qui review les propositions de l\'équipe. Tu identifies les risques, les doublons, et tu priorises selon l\'impact réel sur l\'utilisateur.',
-    'Voici les propositions de l\'équipe :\n\nFRONTEND :\n' + frontendIdeas +
-    '\n\nBACKEND :\n' + backendIdeas +
-    '\n\nAnalyse ces propositions. Quelles sont les 2 meilleures selon toi et pourquoi ? Quelles sont les plus risquées ?'
+    'Tu es un expert UX et qualite logicielle. Tu analyses les propositions avec un oeil critique ' +
+    'et tu identifies les risques (imports fantomes, librairies manquantes, regressions potentielles).',
+    'PROPOSITIONS FRONTEND :\n' + frontendIdeas +
+    '\n\nPROPOSITIONS BACKEND :\n' + backendIdeas +
+    '\n\nCONTEXTE PROJET :\n' + context.substring(0, 1500) +
+    '\n\nAnalyse critique : quelles 2 propositions sont les plus sures et les plus impactantes ? ' +
+    'Quelles sont les plus risquees et pourquoi ?'
   );
 
   return { frontendIdeas, backendIdeas, uxCritique };
 }
 
-// ─── ÉTAPE 2 : PLAN ──────────────────────────────────────
-async function plan(brainstormResult, projectFiles) {
-  console.log('[Team] 📋 Étape 2/6 — Planification...');
+// ─── ETAPE 2 : PLAN ───────────────────────────────────────
+async function plan(brainstormResult, projectFiles, context) {
+  console.log('[Team] Etape 2/6 - Planification...');
 
-  const allFiles = Object.entries(projectFiles)
-    .map(([f, c]) => '=== ' + f + ' ===\n' + c.substring(0, 600))
+  const filesSample = Object.entries(projectFiles)
+    .slice(0, 8)
+    .map(([f, c]) => '=== ' + f + ' ===\n' + c.substring(0, 400))
     .join('\n\n');
 
   const result = await gpt(
-    'Tu es le chef de projet de BudgetQuest. Tu sélectionnes UNE seule tâche à implémenter ce cycle, basée sur le brainstorm de l\'équipe. Tu dois choisir la tâche avec le meilleur rapport impact/risque. Réponds en json.',
-    'BRAINSTORM DE L\'ÉQUIPE :\n\n' +
-    'Frontend a proposé :\n' + brainstormResult.frontendIdeas +
-    '\n\nBackend a proposé :\n' + brainstormResult.backendIdeas +
-    '\n\nAnalyse UX/Qualité :\n' + brainstormResult.uxCritique +
-    '\n\nFICHIERS EXISTANTS (extraits) :\n' + allFiles.substring(0, 3000) +
-    '\n\nSélectionne UNE tâche. Retourne ce json exact :\n' +
-    '{"agent":"frontend"|"backend","title":"...","why":"pourquoi cette tâche maintenant","outputFile":"frontend/src/.../fichier.jsx ou null si modification","filesToModify":["liste des fichiers existants à modifier"],"spec":"description technique très détaillée de ce qui doit être implémenté, ligne par ligne si nécessaire","risks":"risques identifiés","doneCheck":"comment vérifier que c\'est bien fait"}',
+    'Tu es le chef de projet BudgetQuest. Tu selectionnes UNE seule tache ce cycle. ' +
+    'Tu privilegies toujours les taches a faible risque (nouveau fichier > modification). ' +
+    'Tu refuses toute tache qui utiliserait des librairies non installees. Reponds en json.',
+    'BRAINSTORM :\nFrontend : ' + brainstormResult.frontendIdeas.substring(0, 600) +
+    '\nBackend : ' + brainstormResult.backendIdeas.substring(0, 600) +
+    '\nCritique UX : ' + brainstormResult.uxCritique.substring(0, 400) +
+    '\n\nCONTEXTE PROJET :\n' + context.substring(0, 2000) +
+    '\n\nEXTRAITS CODE :\n' + filesSample.substring(0, 2000) +
+    '\n\nRetourne ce json exact :\n' +
+    '{"agent":"frontend ou backend",' +
+    '"title":"titre court",' +
+    '"why":"pourquoi cette tache maintenant en 1 phrase",' +
+    '"outputFile":"frontend/src/components/NouveauFichier.jsx ou null si modification",' +
+    '"filesToModify":["liste fichiers existants a modifier, vide si nouveau fichier"],' +
+    '"spec":"description technique tres detaillee, ligne par ligne",' +
+    '"risks":"risques identifies",' +
+    '"doneCheck":"comment verifier que cest bien fait"}',
     true
   );
 
   return JSON.parse(result);
 }
 
-// ─── ÉTAPE 3 : IMPLEMENT ─────────────────────────────────
-async function implement(task, projectFiles) {
-  console.log('[Team] ⚙️ Étape 3/6 — Implémentation par agent ' + task.agent + '...');
+// ─── ETAPE 3 : IMPLEMENT ──────────────────────────────────
+async function implement(task, projectFiles, context) {
+  console.log('[Team] Etape 3/6 - Implementation agent ' + task.agent + '...');
 
-  // Donner le contexte COMPLET des fichiers concernés
-  const relevantFiles = {};
   const allKeys = Object.keys(projectFiles);
 
-  // Fichiers à modifier
+  // Charger les fichiers pertinents complets
+  const relevant = {};
   (task.filesToModify || []).forEach(f => {
-    const key = allKeys.find(k => k.includes(f.split('/').pop()));
-    if (key) relevantFiles[key] = projectFiles[key];
+    const key = allKeys.find(k => k.includes(f.split('/').pop().replace('.jsx', '').replace('.js', '')));
+    if (key) relevant[key] = projectFiles[key];
   });
 
-  // Fichiers de contexte selon le type d'agent
   if (task.agent === 'frontend') {
-    ['App.jsx', 'index.css', 'api.js', 'authStore.js'].forEach(name => {
+    ['App.jsx', 'index.css', 'api.js', 'authStore.js', 'Layout.jsx'].forEach(name => {
       const key = allKeys.find(k => k.endsWith(name));
-      if (key) relevantFiles[key] = projectFiles[key];
+      if (key && !relevant[key]) relevant[key] = projectFiles[key];
     });
   } else {
     ['index.js', 'supabase.js', 'auth.js'].forEach(name => {
       const key = allKeys.find(k => k.endsWith(name));
-      if (key) relevantFiles[key] = projectFiles[key];
+      if (key && !relevant[key]) relevant[key] = projectFiles[key];
     });
   }
 
-  const contextStr = Object.entries(relevantFiles)
-    .map(([f, c]) => '=== ' + f + ' (COMPLET) ===\n' + c)
+  const contextStr = Object.entries(relevant)
+    .map(([f, c]) => '=== ' + f + ' (complet) ===\n' + c)
     .join('\n\n');
 
-  const systemMsg = task.agent === 'frontend'
-    ? [
-        'Tu es un développeur frontend expert React/TailwindCSS.',
-        'RÈGLES ABSOLUES :',
-        '1. Retourne UNIQUEMENT du code source pur, sans markdown, sans explication.',
-        '2. Le code doit commencer par "import" ou "const" ou "export".',
-        '3. Ne crée PAS de nouveaux imports de fichiers qui n\'existent pas encore.',
-        '4. Utilise uniquement les imports déjà présents dans le projet.',
-        '5. Un seul composant par fichier.',
-        '6. Teste mentalement chaque ligne avant de l\'écrire.',
-      ].join('\n')
-    : [
-        'Tu es un développeur backend expert Node.js/Express.',
-        'RÈGLES ABSOLUES :',
-        '1. Retourne UNIQUEMENT du code source pur, sans markdown, sans explication.',
-        '2. Le code doit commencer par "require(" ou "const" ou "module.exports".',
-        '3. Ne crée PAS de nouveaux imports de fichiers qui n\'existent pas.',
-        '4. Valide toutes les entrées utilisateur.',
-        '5. Teste mentalement chaque ligne avant de l\'écrire.',
-      ].join('\n');
+  const rules = task.agent === 'frontend'
+    ? 'REGLES ABSOLUES :\n' +
+      '1. Retourne UNIQUEMENT du code source pur. PAS de markdown. PAS de backticks.\n' +
+      '2. Le code commence directement par "import" ou "const" ou "export".\n' +
+      '3. Un seul composant par fichier.\n' +
+      '4. Utilise UNIQUEMENT les librairies listees dans le contexte projet.\n' +
+      '5. Nimporte pas de fichiers qui nexistent pas (verifie la liste des fichiers existants).\n' +
+      '6. Utilise uniquement les classes CSS : card, btn-primary, btn-secondary, input, badge, et classes Tailwind standard.'
+    : 'REGLES ABSOLUES :\n' +
+      '1. Retourne UNIQUEMENT du code source pur. PAS de markdown. PAS de backticks.\n' +
+      '2. Le code commence par "require(" ou "const" ou "module.exports".\n' +
+      '3. Valide toutes les entrees utilisateur.\n' +
+      '4. Utilise UNIQUEMENT les librairies installees listees dans le contexte.';
 
-  const code = await gpt(
-    systemMsg,
-    'SPEC DE LA TÂCHE :\n' + task.spec +
-    '\n\nRISQUES À ÉVITER :\n' + task.risks +
-    '\n\nCONTEXTE DU PROJET (fichiers complets) :\n' + contextStr
+  return await gpt(
+    'Tu es un developpeur ' + task.agent + ' expert.\n' + rules,
+    'SPEC DE LA TACHE :\n' + task.spec +
+    '\n\nRISQUES A EVITER :\n' + task.risks +
+    '\n\nFICHIERS DU PROJET DISPONIBLES (pour les imports) :\n' + allKeys.join('\n') +
+    '\n\nCODE DES FICHIERS CONCERNES :\n' + contextStr.substring(0, 4000)
   );
-
-  return code;
 }
 
-// ─── ÉTAPE 4 : REVIEW ────────────────────────────────────
+// ─── ETAPE 4 : REVIEW ─────────────────────────────────────
 async function review(task, code, projectFiles) {
-  console.log('[Team] 🔍 Étape 4/6 — Review par agent qualité...');
+  console.log('[Team] Etape 4/6 - Review qualite...');
 
-  const contextKey = Object.keys(projectFiles).find(k =>
-    task.outputFile ? k.includes(task.outputFile.split('/').pop()) : false
-  );
-  const existingCode = contextKey ? projectFiles[contextKey] : '';
-
-  const reviewResult = await gpt(
-    'Tu es un reviewer de code senior. Tu analyses le code produit et identifies les bugs, les imports manquants, les incohérences avec le projet. Sois précis et factuel. Réponds en json.',
-    'TÂCHE DEMANDÉE :\n' + task.spec +
-    '\n\nCODE EXISTANT (avant modification) :\n' + (existingCode || 'Nouveau fichier') +
+  const result = await gpt(
+    'Tu es un reviewer de code senior specialise React/Node.js. ' +
+    'Tu verifies la qualite, la coherence, les imports, et les bugs potentiels. Reponds en json.',
+    'SPEC DEMANDEE :\n' + task.spec +
+    '\n\nFICHIERS EXISTANTS (pour verifier les imports) :\n' + Object.keys(projectFiles).join('\n') +
     '\n\nCODE PRODUIT :\n' + code +
-    '\n\nFICHIERS DU PROJET (pour vérifier les imports) :\n' + Object.keys(projectFiles).join('\n') +
-    '\n\nRéponds avec ce json exact :\n' +
-    '{"approved":true|false,"score":0-10,"issues":["liste des problèmes"],"fixes":["corrections suggérées"],"summary":"résumé en 1 phrase"}',
+    '\n\nVerifie : imports valides, pas de librairies manquantes, pas de fichiers fantomes, ' +
+    'coherence avec le projet, qualite du code.\n' +
+    'Retourne ce json :\n' +
+    '{"approved":true ou false,' +
+    '"score":0 a 10,' +
+    '"issues":["liste des problemes"],' +
+    '"fixes":["corrections suggerees"],' +
+    '"summary":"resume en 1 phrase"}',
     true
   );
 
-  return JSON.parse(reviewResult);
+  return JSON.parse(result);
 }
 
-// ─── ÉTAPE 5 : FIX si review KO ──────────────────────────
-async function fixCode(task, code, reviewIssues) {
-  console.log('[Team] 🔧 Étape 5/6 — Correction suite au review...');
+// ─── ETAPE 5 : FIX ────────────────────────────────────────
+async function fixCode(task, code, reviewResult) {
+  console.log('[Team] Etape 5/6 - Correction (issues: ' + reviewResult.issues.length + ')...');
 
-  const systemMsg = [
-    'Tu es un développeur expert qui corrige du code suite à une review.',
-    'RÈGLES ABSOLUES :',
-    '1. Retourne UNIQUEMENT le code corrigé complet, sans markdown.',
-    '2. Corrige EXACTEMENT les problèmes listés, ne change rien d\'autre.',
-    '3. Un seul composant par fichier.',
-  ].join('\n');
-
-  const fixed = await gpt(
-    systemMsg,
-    'CODE À CORRIGER :\n' + code +
-    '\n\nPROBLÈMES IDENTIFIÉS :\n' + reviewIssues.join('\n') +
-    '\n\nCORRECTIONS SUGGÉRÉES :\n' + (task.fixes || []).join('\n')
+  return await gpt(
+    'Tu es un developpeur expert qui corrige du code suite a une review. ' +
+    'REGLES : Retourne UNIQUEMENT le code corrige complet. PAS de markdown. PAS de backticks. ' +
+    'Corrige EXACTEMENT les problemes listes, ne change rien dautre.',
+    'CODE A CORRIGER :\n' + code +
+    '\n\nPROBLEMES :\n' + reviewResult.issues.join('\n') +
+    '\n\nCORRECTIONS SUGGEREES :\n' + reviewResult.fixes.join('\n')
   );
-
-  return fixed;
 }
 
-// ─── ÉTAPE 6 : BUILD CHECK ───────────────────────────────
-function buildCheck() {
-  console.log('[Team] 🏗️ Étape 6/6 — Vérification build...');
+// ─── ETAPE 6 : BUILD ──────────────────────────────────────
+function buildFrontend() {
+  console.log('[Team] Etape 6/6 - Build Vite...');
   try {
     execSync('npm run build', {
       cwd: path.join(PROJECT_ROOT, 'frontend'),
@@ -265,190 +260,162 @@ function buildCheck() {
     });
     return { ok: true };
   } catch (err) {
-    const output = (err.stdout || '').toString() + '\n' + (err.stderr || '').toString();
-    return { ok: false, error: output };
+    const out = (err.stdout || '').toString() + '\n' + (err.stderr || '').toString();
+    return { ok: false, error: out };
   }
 }
 
-// ─── Écriture fichier ─────────────────────────────────────
+// ─── Ecriture fichier ─────────────────────────────────────
 function writeFile(relPath, content) {
   const fullPath = path.join(PROJECT_ROOT, relPath);
-  const dir = path.dirname(fullPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
 
-  // Backup
+  let clean = content.trim();
+  const block = clean.match(/```(?:jsx?|tsx?|js|ts)?\n?([\s\S]*?)```/);
+  if (block) clean = block[1].trim();
+
+  const lines = clean.split('\n');
+  const start = lines.findIndex(l =>
+    l.startsWith('import ') || l.startsWith('const ') ||
+    l.startsWith('export ') || l.startsWith('function ') || l.startsWith('require(')
+  );
+  if (start > 0) clean = lines.slice(start).join('\n').trim();
+
+  // Backup si fichier existant
   if (fs.existsSync(fullPath)) {
     fs.writeFileSync(fullPath + '.bak', fs.readFileSync(fullPath));
   }
 
-  // Nettoyer markdown résiduel
-  let clean = content.trim();
-  const blockMatch = clean.match(/```(?:jsx?|tsx?|js|ts)?\n?([\s\S]*?)```/);
-  if (blockMatch) clean = blockMatch[1].trim();
-
-  // Détecter début de code
-  const lines = clean.split('\n');
-  const start = lines.findIndex(l =>
-    l.startsWith('import ') || l.startsWith('const ') ||
-    l.startsWith('export ') || l.startsWith('function ') ||
-    l.startsWith('require(')
-  );
-  if (start > 0) clean = lines.slice(start).join('\n').trim();
-
   fs.writeFileSync(fullPath, clean, 'utf-8');
-  console.log('[Team] ✅ Fichier écrit : ' + relPath);
+  console.log('[Team] Fichier ecrit : ' + relPath);
 }
 
-// ─── CYCLE COMPLET ───────────────────────────────────────
-async function runSmartCycle(cycleNum) {
-  const separator = '═'.repeat(55);
-  console.log('\n' + separator);
-  console.log('[Team] 🔄 Cycle #' + cycleNum + ' démarré à ' + new Date().toLocaleTimeString());
-  console.log(separator);
+// ─── CYCLE COMPLET ────────────────────────────────────────
+async function runCycle(cycleNum) {
+  console.log('\n' + '='.repeat(55));
+  console.log('[Team] Cycle #' + cycleNum + ' - ' + new Date().toLocaleTimeString());
+  console.log('='.repeat(55));
 
   try {
-    // 1. Scanner le projet
-    console.log('[Team] 📂 Scan du projet...');
     const projectFiles = scanProject();
     const doneTasks = loadDone();
-    console.log('[Team] ' + Object.keys(projectFiles).length + ' fichiers scannés, ' + doneTasks.length + ' tâches passées en mémoire.');
+    const context = loadProjectContext();
+    console.log('[Team] ' + Object.keys(projectFiles).length + ' fichiers, ' + doneTasks.length + ' taches passees.');
 
-    // 2. Brainstorm
-    const brainstormResult = await brainstorm(projectFiles, doneTasks);
-
-    // Notifier l'humain du brainstorm (informatif)
+    // 1. Brainstorm
+    const bs = await brainstorm(projectFiles, doneTasks, context);
     await notify(
-      '🧠 *Cycle #' + cycleNum + ' — Brainstorm terminé*\n\n' +
-      '*Frontend propose :*\n' + brainstormResult.frontendIdeas.substring(0, 300) + '...\n\n' +
-      '*UX critique :*\n' + brainstormResult.uxCritique.substring(0, 200) + '...'
+      '🧠 *Cycle #' + cycleNum + ' — Brainstorm*\n\n' +
+      bs.uxCritique.substring(0, 400) + '...'
     );
 
-    // 3. Plan — sélection d'UNE tâche
-    const task = await plan(brainstormResult, projectFiles);
-    console.log('[Team] 📌 Tâche sélectionnée : ' + task.title);
-    console.log('[Team] 📌 Pourquoi : ' + task.why);
-
+    // 2. Plan
+    const task = await plan(bs, projectFiles, context);
+    console.log('[Team] Tache : ' + task.title);
     await notify(
-      '📋 *Tâche sélectionnée :*\n\n' +
-      '🎯 *' + task.title + '*\n' +
-      '_' + task.why + '_\n\n' +
+      '📋 *Tache selectionnee :* ' + task.title + '\n' +
+      '_' + task.why + '_\n' +
       '⚠️ Risques : ' + task.risks
     );
 
-    // 4. Implémenter
-    let code = await implement(task, projectFiles);
+    // 3. Implement
+    let code = await implement(task, projectFiles, context);
 
-    // 5. Review
-    let reviewResult = await review(task, code, projectFiles);
-    console.log('[Team] 📊 Review score : ' + reviewResult.score + '/10 — Approuvé : ' + reviewResult.approved);
+    // 4. Review
+    let rev = await review(task, code, projectFiles);
+    console.log('[Team] Review : ' + rev.score + '/10 - ' + rev.summary);
 
-    // 6. Corriger si nécessaire (max 2 passes)
-    let fixPasses = 0;
-    while (!reviewResult.approved && fixPasses < 2) {
-      console.log('[Team] 🔧 Pass de correction #' + (fixPasses + 1) + '...');
-      console.log('[Team] Problèmes : ' + reviewResult.issues.join(', '));
-      code = await fixCode(task, code, reviewResult.issues);
-      reviewResult = await review(task, code, projectFiles);
-      console.log('[Team] 📊 Review après correction : ' + reviewResult.score + '/10');
-      fixPasses++;
+    // 5. Fix si necessaire (max 2 passes)
+    let passes = 0;
+    while (rev.score < 8 && passes < 2) {
+      console.log('[Team] Score insuffisant (' + rev.score + '/10), correction pass ' + (passes + 1) + '...');
+      code = await fixCode(task, code, rev);
+      rev = await review(task, code, projectFiles);
+      console.log('[Team] Apres correction : ' + rev.score + '/10');
+      passes++;
     }
 
-    // Si score trop bas après 2 passes → skipper
-    if (reviewResult.score < 6) {
-      await notify(
-        '⚠️ *Tâche abandonnée : ' + task.title + '*\n' +
-        'Score qualité trop bas après ' + fixPasses + ' corrections (' + reviewResult.score + '/10).\n' +
-        'Problèmes persistants : ' + reviewResult.issues.join(', ')
-      );
+    // Abandonner si qualite trop basse
+    if (rev.score < 6) {
+      await notify('⚠️ Tache abandonnee : *' + task.title + '* (score ' + rev.score + '/10 apres ' + passes + ' corrections)');
       return;
     }
 
-    // 7. Écrire le fichier
-    const targetFile = task.outputFile || (task.filesToModify && task.filesToModify[0]);
-    if (!targetFile) {
-      console.log('[Team] ⚠️ Aucun fichier cible défini, skip.');
+    // 6. Ecrire le fichier
+    const target = task.outputFile || (task.filesToModify && task.filesToModify[0]);
+    if (!target) {
+      console.log('[Team] Aucun fichier cible, skip.');
       return;
     }
-    writeFile(targetFile, code);
+    writeFile(target, code);
 
-    // 8. Build check
-    const build = buildCheck();
+    // 7. Build check
+    const build = buildFrontend();
     if (!build.ok) {
-      console.log('[Team] ❌ Build échoué, tentative de correction automatique...');
-
-      // Donner l'erreur à GPT pour correction rapide
-      const buildFix = await gpt(
-        'Tu es un expert debug React. Corrige le code pour que le build Vite réussisse. Retourne UNIQUEMENT le code corrigé complet, sans markdown.',
-        'ERREUR DE BUILD :\n' + build.error.substring(0, 1500) +
-        '\n\nCODE ACTUEL :\n' + code
+      console.log('[Team] Build KO, tentative correction auto...');
+      const fixedCode = await gpt(
+        'Tu es un expert debug React/Vite. Corrige le code pour que le build reussisse. ' +
+        'Retourne UNIQUEMENT le code corrige, sans markdown, sans backticks.',
+        'ERREUR BUILD :\n' + build.error.substring(0, 2000) + '\n\nCODE ACTUEL :\n' + code
       );
-      writeFile(targetFile, buildFix);
+      writeFile(target, fixedCode);
 
-      const rebuild = buildCheck();
+      const rebuild = buildFrontend();
       if (!rebuild.ok) {
-        // Restaurer le backup
-        const backupPath = path.join(PROJECT_ROOT, targetFile + '.bak');
-        if (fs.existsSync(backupPath)) {
-          fs.copyFileSync(backupPath, path.join(PROJECT_ROOT, targetFile));
-          console.log('[Team] ↩️ Backup restauré.');
+        // Restaurer backup
+        const bak = path.join(PROJECT_ROOT, target + '.bak');
+        if (fs.existsSync(bak)) {
+          fs.copyFileSync(bak, path.join(PROJECT_ROOT, target));
+          console.log('[Team] Backup restaure.');
         }
-        await notifyError(
-          'Build échoué même après correction pour "' + task.title + '".\n' +
-          'Fichier restauré depuis le backup.'
-        );
+        await notifyError('Build echoue pour "' + task.title + '". Fichier restaure.');
         return;
       }
     }
 
-    // 9. Push uniquement si tout est vert
-    saveDone(task.title);
-    await commitAndPush('feat: ' + task.title + ' [score: ' + reviewResult.score + '/10]', ['.']);
+    // Nettoyer les backups apres succes
+    const bakPath = path.join(PROJECT_ROOT, target + '.bak');
+    if (fs.existsSync(bakPath)) fs.unlinkSync(bakPath);
 
+    // 8. Push
+    saveDone(task.title);
+    await commitAndPush('feat: ' + task.title + ' [' + rev.score + '/10]', ['.']);
     await notify(
-      '✅ *Cycle #' + cycleNum + ' terminé avec succès !*\n\n' +
-      '📦 Tâche : *' + task.title + '*\n' +
-      '⭐ Score qualité : ' + reviewResult.score + '/10\n' +
-      '📝 ' + reviewResult.summary + '\n\n' +
-      '_Prochain cycle dans ' + (CYCLE_INTERVAL_MS / 60000) + ' minutes_'
+      '✅ *Cycle #' + cycleNum + ' termine !*\n\n' +
+      '📦 *' + task.title + '*\n' +
+      '⭐ Score : ' + rev.score + '/10\n' +
+      '📝 ' + rev.summary + '\n\n' +
+      '_Prochain cycle dans ' + (CYCLE_INTERVAL_MS / 60000) + ' min_'
     );
 
-    console.log('\n[Team] ✅ Cycle #' + cycleNum + ' terminé — ' + task.title);
-
   } catch (err) {
-    console.error('[Team] ❌ Erreur cycle #' + cycleNum + ' :', err.message);
+    console.error('[Team] Erreur cycle #' + cycleNum + ' :', err.message);
     await notifyError('Erreur cycle #' + cycleNum + ' : ' + err.message);
   }
 }
 
-// ─── Démarrage ────────────────────────────────────────────
+// ─── Demarrage ────────────────────────────────────────────
 async function start() {
-  console.log('🤖 BudgetQuest — Équipe Intelligente');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('Processus : Brainstorm → Plan → Implement → Review → Fix → Build → Push');
-  console.log('Intervalle : ' + (CYCLE_INTERVAL_MS / 60000) + ' minutes');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  console.log('BudgetQuest - Equipe Intelligente');
+  console.log('Brainstorm -> Plan -> Implement -> Review -> Fix -> Build -> Push');
+  console.log('Intervalle : ' + (CYCLE_INTERVAL_MS / 60000) + ' min\n');
 
   await notify(
-    '🚀 *Équipe Intelligente BudgetQuest activée*\n\n' +
-    'Les agents vont maintenant :\n' +
-    '• Brainstormer ensemble\n' +
-    '• Sélectionner la meilleure tâche\n' +
-    '• Implémenter avec contexte complet\n' +
-    '• Se reviewer mutuellement\n' +
-    '• Vérifier le build avant de pusher\n\n' +
-    'Une tâche bien faite toutes les ' + (CYCLE_INTERVAL_MS / 60000) + ' min.\n\n' +
+    '🚀 *Equipe Intelligente activee*\n\n' +
+    'Processus par cycle :\n' +
+    '• Brainstorm (3 agents)\n' +
+    '• Selection de la meilleure tache\n' +
+    '• Implementation avec contexte complet\n' +
+    '• Review qualite (score /10)\n' +
+    '• Build Vite obligatoire\n' +
+    '• Push seulement si tout est vert\n\n' +
+    '1 tache par cycle, toutes les ' + (CYCLE_INTERVAL_MS / 60000) + ' min.\n\n' +
     'Commandes : /status /debug /help'
   );
 
-  let cycleNum = 1;
-
-  // Premier cycle immédiat
-  await runSmartCycle(cycleNum++);
-
-  // Boucle
-  setInterval(async () => {
-    await runSmartCycle(cycleNum++);
-  }, CYCLE_INTERVAL_MS);
+  let n = 1;
+  await runCycle(n++);
+  setInterval(() => runCycle(n++), CYCLE_INTERVAL_MS);
 
   // Telegram
   const { bot } = require('./telegram');
@@ -462,81 +429,61 @@ async function start() {
 
     if (text === '/status') {
       const s = await getRepoStatus();
-      await bot.sendMessage(chatId,
-        '📊 *Status*\n\nDerniers commits :\n' + s.recentCommits.map(c => '• ' + c.message).join('\n'),
-        { parse_mode: 'Markdown' }
-      );
+      await bot.sendMessage(chatId, '📊 *Status*\n\n' + s.recentCommits.map(c => '• ' + c.message).join('\n'), { parse_mode: 'Markdown' });
       return;
     }
-
     if (text === '/debug') {
       await bot.sendMessage(chatId, '🔍 Debug en cours...');
       const r = await runDebugCycle();
-      if (!r.hasErrors) await bot.sendMessage(chatId, '✅ Build OK, aucune erreur.');
-      else if (r.fixed > 0) {
-        await commitAndPush('fix: auto-debug', ['.']);
-        await bot.sendMessage(chatId, '🔧 ' + r.fixed + ' erreur(s) corrigée(s) et pushée(s).');
-      } else await bot.sendMessage(chatId, '⚠️ Erreurs persistantes, vérification manuelle nécessaire.');
+      if (!r.hasErrors) await bot.sendMessage(chatId, '✅ Build OK.');
+      else if (r.fixed > 0) { await commitAndPush('fix: auto-debug', ['frontend']); await bot.sendMessage(chatId, '🔧 ' + r.fixed + ' erreur(s) corrigee(s).'); }
+      else await bot.sendMessage(chatId, '⚠️ Erreurs persistantes.');
       return;
     }
-
     if (text === '/help') {
-      await bot.sendMessage(chatId,
-        '🎮 *BudgetQuest — Équipe Intelligente*\n\n' +
-        '/status — Derniers commits\n' +
-        '/debug  — Corriger les erreurs frontend\n' +
-        '/help   — Aide\n\n' +
-        'Ou envoie une directive libre, ex:\n' +
-        '"Ajoute une page de profil utilisateur"',
-        { parse_mode: 'Markdown' }
-      );
+      await bot.sendMessage(chatId, '🎮 *BudgetQuest*\n\n/status - Commits\n/debug - Fix erreurs\n/help - Aide\n\nOu envoie une directive libre.', { parse_mode: 'Markdown' });
       return;
     }
-
     if (text.startsWith('/')) return;
 
-    // Directive libre — passe par le même processus intelligent
-    await notify('📌 *Directive reçue :* ' + text + '\n\nDébut du processus intelligent...');
-    const projectFiles = scanProject();
+    // Directive libre
+    await notify('📌 *Directive :* ' + text);
+    const pf = scanProject();
+    const ctx = loadProjectContext();
 
-    // Plan direct sur la directive
     const task = JSON.parse(await gpt(
-      'Tu es le chef de projet BudgetQuest. Une directive humaine arrive. Crée un plan détaillé. Réponds en json.',
+      'Tu es le chef de projet BudgetQuest. Cree un plan pour cette directive. Reponds en json.',
       'DIRECTIVE : ' + text +
-      '\n\nFICHIERS EXISTANTS :\n' + Object.keys(projectFiles).join('\n') +
-      '\n\nRetourne ce json :\n{"agent":"frontend"|"backend","title":"...","why":"...","outputFile":"frontend/src/.../fichier.jsx ou null","filesToModify":[],"spec":"description technique très détaillée","risks":"...","doneCheck":"..."}',
+      '\n\nCONTEXTE :\n' + ctx.substring(0, 2000) +
+      '\n\nFICHIERS :\n' + Object.keys(pf).join('\n') +
+      '\n\nJson : {"agent":"frontend ou backend","title":"...","why":"...","outputFile":"frontend/src/.../Fichier.jsx ou null","filesToModify":[],"spec":"spec detaillee","risks":"...","doneCheck":"..."}',
       true
     ));
 
-    let code = await implement(task, projectFiles);
-    let rev = await review(task, code, projectFiles);
-
-    let fixes = 0;
-    while (!rev.approved && fixes < 2) {
-      code = await fixCode(task, code, rev.issues);
-      rev = await review(task, code, projectFiles);
-      fixes++;
-    }
+    let code = await implement(task, pf, ctx);
+    let rev = await review(task, code, pf);
+    let p = 0;
+    while (rev.score < 8 && p < 2) { code = await fixCode(task, code, rev); rev = await review(task, code, pf); p++; }
 
     const target = task.outputFile || (task.filesToModify && task.filesToModify[0]);
     if (target) {
       writeFile(target, code);
-      const build = buildCheck();
+      const build = buildFrontend();
       if (build.ok) {
         saveDone(task.title);
         await commitAndPush('feat: ' + task.title + ' (directive) [' + rev.score + '/10]', ['.']);
-        await notify('✅ *Directive exécutée :* ' + task.title + '\n⭐ Score : ' + rev.score + '/10');
+        await notify('✅ *Directive executee :* ' + task.title + ' [' + rev.score + '/10]');
       } else {
-        const backupPath = path.join(PROJECT_ROOT, target + '.bak');
-        if (fs.existsSync(backupPath)) fs.copyFileSync(backupPath, path.join(PROJECT_ROOT, target));
-        await notifyError('Build échoué pour "' + task.title + '". Backup restauré.');
+        const bak = path.join(PROJECT_ROOT, target + '.bak');
+        if (fs.existsSync(bak)) fs.copyFileSync(bak, path.join(PROJECT_ROOT, target));
+        await notifyError('Build echoue pour directive "' + task.title + '". Backup restaure.');
       }
     }
   });
 }
 
 start().catch(async err => {
-  console.error('Erreur fatale :', err);
+  console.error('Erreur :', err);
   await notifyError('Erreur fatale : ' + err.message);
   process.exit(1);
 });
