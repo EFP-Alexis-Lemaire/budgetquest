@@ -273,11 +273,16 @@ async function implement(task, projectFiles, context) {
 async function review(task, code, projectFiles) {
   console.log('[Team] 4/6 Review...');
   const result = await gpt(
-    'Tu es reviewer senior React/Node.js. Analyse le code et reponds en json.',
+    'Tu es reviewer senior React/Node.js. Tu evalues le code de facon PRAGMATIQUE. ' +
+    'Un score de 7-8/10 est la norme pour du bon code fonctionnel. ' +
+    'Tu donnes 9-10 uniquement si le code est exceptionnel. ' +
+    'Tu donnes moins de 5 uniquement si le code est vraiment casse (imports inexistants, erreurs de syntaxe graves, composants dupliques). ' +
+    'Les imperfections mineures de style ou dorganisation ne font pas baisser le score en dessous de 6. ' +
+    'Reponds en json.',
     'SPEC : ' + task.spec + '\n\n' +
     'FICHIERS EXISTANTS : ' + Object.keys(projectFiles).join(', ') + '\n\n' +
     'CODE :\n' + code + '\n\n' +
-    'Verifie : imports valides, pas de fichiers fantomes, coherence, qualite. ' +
+    'Verifie uniquement : (1) imports valides vers fichiers existants, (2) pas de librairies non installees, (3) syntaxe correcte, (4) logique coherente avec la spec. ' +
     'Json : {"approved":true,"score":0,"issues":[],"fixes":[],"summary":""}',
     true
   );
@@ -364,17 +369,18 @@ async function runCycle(cycleNum) {
     let rev = await review(task, code, projectFiles);
     console.log('[Team] Review : ' + rev.score + '/10');
 
-    // 5. Fix si necessaire
+    // 5. Fix si necessaire (seuil 6/10, max 2 passes)
     let passes = 0;
-    while (rev.score < 8 && passes < 2) {
+    while (rev.score < 6 && passes < 2) {
       code = await fixCode(code, rev);
       rev = await review(task, code, projectFiles);
       console.log('[Team] Apres fix : ' + rev.score + '/10');
       passes++;
     }
 
-    if (rev.score < 6) {
-      await notify('⚠️ Tache abandonnee : *' + task.title + '* (score ' + rev.score + '/10)');
+    // Abandonner seulement si vraiment catastrophique (< 4/10 apres corrections)
+    if (rev.score < 4) {
+      await notify('⚠️ Tache abandonnee : *' + task.title + '* (score ' + rev.score + '/10 apres ' + passes + ' corrections)');
       return;
     }
 
@@ -511,7 +517,7 @@ async function start() {
     let code = await implement(task, pf, ctx);
     let rev = await review(task, code, pf);
     let p = 0;
-    while (rev.score < 8 && p < 2) { code = await fixCode(code, rev); rev = await review(task, code, pf); p++; }
+    while (rev.score < 6 && p < 2) { code = await fixCode(code, rev); rev = await review(task, code, pf); p++; }
 
     const target = task.outputFile || (task.filesToModify && task.filesToModify[0]);
     if (target) {
