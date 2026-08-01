@@ -17,6 +17,7 @@ const { notify, notifyError, askHuman } = require('./telegram');
 const { runBackendAgent } = require('./agents/backendAgent');
 const { runFrontendAgent } = require('./agents/frontendAgent');
 const { commitAndPush } = require('./agents/devopsAgent');
+const { runDebugCycle } = require('./agents/debugAgent');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const PROJECT_ROOT = path.join(__dirname, '../');
@@ -318,9 +319,21 @@ async function runCycle(cycleNum) {
       }
     }
 
-    // 3. Commit et push si des fichiers ont été créés/modifiés
-    if (completed.length > 0) {
-      const commitMsg = `feat(autonomous): cycle #${cycleNum} - ${completed.join(', ').substring(0, 60)}`;
+    // 3. Debug automatique — vérifier et corriger les erreurs frontend
+    console.log('\n[Autonomous] 🔍 Vérification des erreurs frontend...');
+    const debugResult = await runDebugCycle();
+
+    if (!debugResult.hasErrors) {
+      console.log('[Autonomous] ✅ Aucune erreur frontend.');
+    } else if (debugResult.fixed > 0) {
+      await notify('🔧 *Debug automatique :* ' + debugResult.fixed + ' erreur(s) corrigée(s) automatiquement.');
+    } else {
+      await notifyError('⚠️ Erreurs frontend persistantes après debug automatique. Vérification manuelle requise.');
+    }
+
+    // 4. Commit et push si des fichiers ont été créés/modifiés
+    if (completed.length > 0 || debugResult.fixed > 0) {
+      const commitMsg = 'feat(autonomous): cycle #' + cycleNum + ' - ' + completed.join(', ').substring(0, 60);
       await commitAndPush(commitMsg, ['.']);
 
       await notify(
@@ -368,22 +381,59 @@ async function start() {
   const { bot } = require('./telegram');
   bot.on('message', async (msg) => {
     if (msg.chat.id.toString() !== process.env.TELEGRAM_CHAT_ID) return;
-    const text = msg.text || '';
+    const text = (msg.text || '').trim();
+
+    // ── Commandes ──
+    if (text === '/status') {
+      const status = await getRepoStatus();
+      const commits = status.recentCommits.map(c => '• ' + c.message).join('\n');
+      await bot.sendMessage(chatId, '📊 *Status du repo*\n\n' + commits, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (text === '/debug') {
+      await bot.sendMessage(chatId, '🔍 Lancement du debug automatique frontend...');
+      const result = await runDebugCycle();
+      if (!result.hasErrors) {
+        await bot.sendMessage(chatId, '✅ Aucune erreur, le frontend compile correctement.');
+      } else if (result.fixed > 0) {
+        await commitAndPush('fix: auto-debug ' + result.fixed + ' erreur(s)', ['.']);
+        await bot.sendMessage(chatId, '🔧 ' + result.fixed + ' erreur(s) corrigée(s) et pushée(s) sur GitHub.');
+      } else {
+        await bot.sendMessage(chatId, '⚠️ Erreurs persistantes après tentative de correction. Vérifie les logs.');
+      }
+      return;
+    }
+
+    if (text === '/help') {
+      await bot.sendMessage(chatId,
+        '🎮 *BudgetQuest Bot*\n\n' +
+        '*Commandes :*\n' +
+        '/status - État du repo\n' +
+        '/debug  - Corriger les erreurs frontend\n' +
+        '/help   - Aide\n\n' +
+        '*Directives libres :*\n' +
+        'Envoyez n\'importe quelle instruction, ex:\n' +
+        '"Ajoute une page profil"\n' +
+        '"Améliore le dashboard"',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
     if (text.startsWith('/')) return;
 
-    // Directive prioritaire : l'injecter comme tâche immédiate
-    console.log(`[Autonomous] 📱 Directive reçue : ${text}`);
-    await notify(`📌 Directive prioritaire reçue, exécution immédiate...`);
+    // ── Directive libre ──
+    console.log('[Autonomous] Directive recue : ' + text);
+    await notify('📌 Directive prioritaire reçue, exécution immédiate...');
 
     try {
-      // Déterminer l'agent
       const routing = await openai.chat.completions.create({
         model: 'gpt-4o',
         messages: [
           {
             role: 'system',
-            content: `Détermine l'agent pour cette tâche BudgetQuest.
-Réponds en json : {"agent":"frontend"|"backend","title":"titre court","description":"description détaillée","outputFile":"chemin/fichier.jsx ou null"}`
+            content: 'Détermine l\'agent pour cette tâche BudgetQuest. Réponds en json : {"agent":"frontend"|"backend","title":"titre court","description":"description détaillée avec chemin complet frontend/src/... ou backend/src/...","outputFile":"frontend/src/.../fichier.jsx ou null"}'
           },
           { role: 'user', content: text },
         ],
@@ -394,10 +444,19 @@ Réponds en json : {"agent":"frontend"|"backend","title":"titre court","descript
       const task = JSON.parse(routing.choices[0].message.content);
       await executeTask(task);
       saveDoneTask(task.title);
-      await commitAndPush(`feat: ${task.title} (directive)`, ['.']);
-      await notify(`✅ Directive exécutée : *${task.title}*`);
+
+      // Debug auto après chaque directive frontend
+      if (task.agent === 'frontend') {
+        const debugResult = await runDebugCycle();
+        if (debugResult.fixed > 0) {
+          await notify('🔧 ' + debugResult.fixed + ' erreur(s) auto-corrigée(s) après la directive.');
+        }
+      }
+
+      await commitAndPush('feat: ' + task.title + ' (directive)', ['.']);
+      await notify('✅ Directive exécutée : *' + task.title + '*', { parse_mode: 'Markdown' });
     } catch (err) {
-      await notifyError(`Erreur directive : ${err.message}`);
+      await notifyError('Erreur directive : ' + err.message);
     }
   });
 }
