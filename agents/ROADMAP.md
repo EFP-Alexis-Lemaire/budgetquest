@@ -15,7 +15,7 @@ Les agents DOIVENT respecter cet ordre strict :
 - [x] JWT token + middleware auth backend
 - [x] Protection des routes frontend (redirect si non connecté)
 - [ ] Page profil utilisateur (nom, email, avatar, stats globales)
-- [ ] Déconnexion propre avec suppression token
+- [x] Déconnexion propre avec suppression token
 
 ### Budget mensuel
 - [x] Création d'un budget mensuel avec catégories
