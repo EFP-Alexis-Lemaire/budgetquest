@@ -1,5 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
+import { useApplyTheme } from '../store/themeStore';
+import ThemeSwitcher from './ThemeSwitcher';
 import {
   LayoutDashboard, Wallet, ArrowLeftRight,
   PiggyBank, Trophy, BarChart3, LogOut,
@@ -18,6 +20,7 @@ const navItems = [
 export default function Layout() {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
+  useApplyTheme(); // Applique le thème sur <html>
 
   const handleLogout = () => {
     logout();
@@ -33,6 +36,9 @@ export default function Layout() {
           <h1 className="text-xl font-bold text-white flex items-center gap-2">
             🎮 <span className="text-primary-500">Budget</span>Quest
           </h1>
+          <div className="mt-3">
+            <ThemeSwitcher />
+          </div>
         </div>
 
         {/* User info */}

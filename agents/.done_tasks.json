@@ -18,5 +18,9 @@
   {
     "task": "Ajout de modes sombre, clair et automatique",
     "done_at": "2026-08-01T11:11:44.450Z"
+  },
+  {
+    "task": "Ajouter des feedbacks visuels et sonores pour la progression XP",
+    "done_at": "2026-08-01T11:14:46.663Z"
   }
 ]
